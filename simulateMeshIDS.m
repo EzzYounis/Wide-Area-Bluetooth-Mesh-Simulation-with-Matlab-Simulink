@@ -39,7 +39,6 @@ function node = createNormalNode(id, x, y)
     node.message_history = {};
     node.detection_stats = struct('tp', 0, 'fp', 0, 'tn', 0, 'fn', 0);
     node.is_active = true;
-    node.ids_model = createIDSModel();
     node.attack_strategy = '';  % Empty for normal nodes
     node.attack_frequency = 0;  % 0 for normal nodes
     node.last_attack_time = 0;
@@ -67,8 +66,6 @@ function node = createAttackerNode(id, x, y)
     node.attack_frequency = 30 + 30 * rand(); % 30-60 seconds between attacks
     node.last_attack_time = 0;
     node.target_nodes = [];
-    node.ids_model = createIDSModel();
-
 end
 
 function ids_model = createIDSModel()
@@ -76,25 +73,31 @@ function ids_model = createIDSModel()
     ids_model.model_loaded = false;
     ids_model.attack_types = {'NORMAL', 'FLOODING', 'SPOOFING', 'INJECTION', ...
                              'EXPLOITATION', 'MISINFORMATION', 'RESOURCE_DRAIN'};
-    ids_model.feature_weights = rand(43, 1); % Random weights for simulation
-    ids_model = loadIDSModel(ids_model); % Try to load ONNX model
+    ids_model.feature_weights = rand(43, 1); % Keep for fallback
+    ids_model = trainRandomForestModel(ids_model); % New function
 end
 
-function ids_model = loadIDSModel(ids_model)
+function ids_model = trainRandomForestModel(ids_model)
     try
-         ids_model.net = importNetworkFromONNX('disaster_mesh_ids.onnx');
-         ids_model.model_loaded = true;
-         fprintf('ONNX model loaded successfully\n');
+        fprintf('Training Random Forest classifier...\n');
+        
+        % Generate training data (similar to your Python model)
+        [X_train, y_train] = generateTrainingData(5000, ids_model.attack_types);
+        
+        % Create Random Forest using TreeBagger
+        ids_model.rf_model = TreeBagger(100, X_train, y_train, ...
+            'Method', 'classification', ...
+            'NumPredictorsToSample', 'all', ...
+            'MinLeafSize', 1, ...
+            'InBagFraction', 0.7);
+        
+        ids_model.model_loaded = true;
+        fprintf('Random Forest model trained successfully\n');
+        
     catch ME
-         fprintf('Failed to load ONNX model: %s\n', ME.message);
-         fprintf('Using simplified simulation model instead\n');
-         ids_model.model_loaded = false;
-    end
-    
-    % For simulation purposes, we'll use a simplified model
-    ids_model.model_loaded = true; % Set to true when you integrate ONNX
-    if ids_model.model_loaded == false
-        fprintf('Using simplified IDS model for simulation\n');
+        fprintf('Failed to train Random Forest: %s\n', ME.message);
+        fprintf('Using simplified simulation model instead\n');
+        ids_model.model_loaded = false;
     end
 end
 
@@ -152,6 +155,8 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
     if ~node.is_active || node.battery_level < 0.1
         return;
     end
+    fprintf('Message %s: From Node %d → To Node %d\n', ...
+        message.id, message.source_id, node.id);
     
     % Store message in buffer
     node.message_buffer{end+1} = message;
@@ -196,6 +201,14 @@ function [node, detection_result] = runIDSDetection(node, message, sender_node, 
         simulation_data.detections = detection_result;  % First detection
     else
         simulation_data.detections(end+1) = detection_result;  % Subsequent detections
+    end
+
+    if detection_result.is_attack && detection_result.confidence > 0.7
+        message.blocked = true;
+        message.block_reason = detection_result.attack_type;
+        fprintf('Node %d BLOCKED message %s (reason: %s)\n', ...
+            node.id, message.id, detection_result.attack_type);
+        return; % Don't process further
     end
 
 end
@@ -435,16 +448,71 @@ function score = getEmergencyContextScore(message)
     score = max(0, min(score, 1.0));
 end
 
-%% IDS Prediction Functions
 function [is_attack, attack_type, confidence] = predictAttack(ids_model, features)
     if ids_model.model_loaded
-        prediction = predict(ids_model.net, features');
-        [confidence, idx] = max(prediction);
-        attack_type = ids_model.attack_types{idx};
-        is_attack = ~strcmp(attack_type, 'NORMAL');
+        try
+            % Predict using Random Forest
+            [prediction, scores] = predict(ids_model.rf_model, features);
+            attack_type = prediction{1}; % TreeBagger returns cell array
+            
+            % Calculate confidence from voting scores
+            confidence = max(scores);
+            is_attack = ~strcmp(attack_type, 'NORMAL');
+            
+        catch
+            % Fallback to simulation model
+            [is_attack, attack_type, confidence] = simulateDetection(ids_model, features);
+        end
     else
         % Use simplified simulation model
         [is_attack, attack_type, confidence] = simulateDetection(ids_model, features);
+    end
+end
+
+
+function [X, y] = generateTrainingData(n_samples, attack_types)
+    % Class distribution matching your Python model
+    class_probs = [0.60, 0.12, 0.10, 0.08, 0.05, 0.03, 0.02];
+    
+    X = [];
+    y = {};
+    
+    for i = 1:n_samples
+        % Select class based on distribution
+        rand_val = rand();
+        cumsum_probs = cumsum(class_probs);
+        class_idx = find(rand_val <= cumsum_probs, 1);
+        selected_class = attack_types{class_idx};
+        
+        % Generate features based on class (simplified version)
+        features = generateFeaturesForClass(selected_class);
+        
+        X = [X; features];
+        y{end+1} = selected_class;
+    end
+end
+
+function features = generateFeaturesForClass(class_name)
+    % Generate 43 features based on class type
+    features = rand(1, 43); % Start with random baseline
+    
+    switch class_name
+        case 'FLOODING'
+            features(15) = rand()*100 + 50;     % High message_frequency
+            features(21) = rand()*0.2;          % Low sender_reputation
+            features(33) = rand()*0.2 + 0.8;    % High battery_impact
+            
+        case 'SPOOFING'
+            features(13) = randi([1, 5]);       % suspicious_url_count
+            features(21) = rand()*0.4;          % Low sender_reputation
+            features(10) = rand()*0.5 + 0.3;    % High special_char_ratio
+            
+        case 'INJECTION'
+            features(14) = randi([2, 8]);       % High command_pattern_count
+            features(10) = rand()*0.5 + 0.4;    % High special_char_ratio
+            features(21) = rand()*0.3;          % Very low sender_reputation
+            
+        % Add other cases as needed
     end
 end
 
@@ -573,7 +641,7 @@ function node = launchAttack(node, current_time, target_nodes)
         node.id, node.attack_strategy, current_time);
     
     % Send attack message
-    message = sendMessage(node, attack_content, 'ATTACK', target_id, current_time);
+    message = sendMessage(node, attack_content, 'DATA', target_id, current_time);
 end
 
 function content = generateAttackContent(node)
@@ -1046,6 +1114,16 @@ function saveSimulationResults(nodes, stats_history)
     end
 end
 
+function shared_model = createSharedIDSModel()
+    shared_model = struct();
+    shared_model.model_loaded = false;
+    shared_model.attack_types = {'NORMAL', 'FLOODING', 'SPOOFING', 'INJECTION', ...
+                                'EXPLOITATION', 'MISINFORMATION', 'RESOURCE_DRAIN'};
+    
+    % Train once for all nodes
+    shared_model = trainRandomForestModel(shared_model);
+end
+
 %% Main Simulation Function
 function runBluetoothMeshSimulation()
     global simulation_data;
@@ -1062,12 +1140,16 @@ function runBluetoothMeshSimulation()
     % Initialize nodes
     fprintf('Initializing network nodes...\n');
     nodes = [];
+    fprintf('Training shared IDS model...\n');
+    shared_ids_model = createSharedIDSModel();
     
     % Create normal nodes with random positions
     for i = 1:NUM_NORMAL_NODES
         x = rand() * AREA_SIZE;
         y = rand() * AREA_SIZE;
-        nodes = [nodes, createNormalNode(i, x, y)];
+        node = createNormalNode(i, x, y);
+        node.ids_model = shared_ids_model;  % ← SAME model for all
+        nodes = [nodes, node];
     end
     
     % Create attacker nodes
@@ -1075,6 +1157,8 @@ function runBluetoothMeshSimulation()
         x = rand() * AREA_SIZE;
         y = rand() * AREA_SIZE;
         attacker = createAttackerNode(NUM_NORMAL_NODES + i, x, y);
+        attacker.ids_model = shared_ids_model;  % ← SAME model for all
+
         nodes = [nodes, attacker];
     end
     
@@ -1230,33 +1314,7 @@ function runBluetoothMeshSimulation()
     saveSimulationResults(nodes, stats_history);
 end
 
-%% ONNX Model Integration Instructions
-% To integrate your ONNX model, follow these steps:
-%
-% 1. Uncomment and modify the loadIDSModel function:
-%    function ids_model = loadIDSModel(ids_model)
-%        try
-%            ids_model.net = importONNXNetwork('your_model_path.onnx');
-%            ids_model.model_loaded = true;
-%            fprintf('ONNX model loaded successfully\n');
-%        catch ME
-%            fprintf('Failed to load ONNX model: %s\n', ME.message);
-%            ids_model.model_loaded = false;
-%        end
-%    end
-%
-% 2. Modify the predictAttack function:
-%    function [is_attack, attack_type, confidence] = predictAttack(ids_model, features)
-%        if ids_model.model_loaded
-%            % Predict using ONNX model
-%            prediction = predict(ids_model.net, features');
-%            [confidence, idx] = max(prediction);
-%            attack_type = ids_model.attack_types{idx};
-%            is_attack = ~strcmp(attack_type, 'NORMAL');
-%        else
-%            [is_attack, attack_type, confidence] = simulateDetection(ids_model, features);
-%        end
-%    end
+
 
 %% Run the simulation
 fprintf('=== BLUETOOTH MESH NETWORK IDS SIMULATION ===\n');
