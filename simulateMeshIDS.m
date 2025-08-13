@@ -1,0 +1,1273 @@
+%% Bluetooth Mesh Network IDS Simulation
+% AI-Assisted Intrusion Detection System for Bluetooth Mesh Networks
+% Author: Research Simulation
+% Date: 2024
+
+clear all; close all; clc;
+
+%% Simulation Parameters
+global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE ;
+NUM_NORMAL_NODES = 15;
+NUM_ATTACK_NODES = 2;
+TOTAL_NODES = NUM_NORMAL_NODES + NUM_ATTACK_NODES;
+MESSAGE_INTERVAL = 15; % seconds
+SIMULATION_TIME = 10 * 60; % 10 minutes in seconds
+TRANSMISSION_RANGE = 50; % meters
+AREA_SIZE = 200; % 200x200 meter area
+
+%% Initialize Global Variables
+global simulation_data;
+simulation_data = struct();
+simulation_data.messages = struct([]);        % Empty struct array, NOT []
+simulation_data.detections = struct([]);      % Empty struct array, NOT []
+simulation_data.network_events = struct([])
+simulation_data.statistics = struct();
+simulation_data.current_time = 0;
+
+%% Node Creation Functions
+function node = createNormalNode(id, x, y)
+    node = struct();
+    node.id = id;
+    node.position = [x, y];
+    node.is_attacker = false;
+    node.battery_level = 0.8 + 0.2 * rand(); % 80-100%
+    node.processing_power = 0.7 + 0.3 * rand(); % 70-100%
+    node.neighbors = [];
+    node.message_buffer = {};
+    node.routing_table = containers.Map();
+    node.reputation_scores = containers.Map();
+    node.message_history = {};
+    node.detection_stats = struct('tp', 0, 'fp', 0, 'tn', 0, 'fn', 0);
+    node.is_active = true;
+    node.ids_model = createIDSModel();
+    node.attack_strategy = '';  % Empty for normal nodes
+    node.attack_frequency = 0;  % 0 for normal nodes
+    node.last_attack_time = 0;
+    node.target_nodes = [];
+end
+
+function node = createAttackerNode(id, x, y)
+    node = struct();
+    node.id = id;
+    node.position = [x, y];
+    node.is_attacker = true;
+    node.battery_level = 0.9 + 0.1 * rand(); % 90-100%
+    node.processing_power = 0.8 + 0.2 * rand(); % 80-100%
+    node.neighbors = [];
+    node.message_buffer = {};
+    node.routing_table = containers.Map();
+    node.reputation_scores = containers.Map();
+    node.message_history = {};
+    node.detection_stats = struct('tp', 0, 'fp', 0, 'tn', 0, 'fn', 0);
+    node.is_active = true;
+    
+    % Attacker-specific properties
+    strategies = {'FLOODING', 'SPOOFING', 'INJECTION', 'RESOURCE_DRAIN'};
+    node.attack_strategy = strategies{randi(length(strategies))};
+    node.attack_frequency = 30 + 30 * rand(); % 30-60 seconds between attacks
+    node.last_attack_time = 0;
+    node.target_nodes = [];
+    node.ids_model = createIDSModel();
+
+end
+
+function ids_model = createIDSModel()
+    ids_model = struct();
+    ids_model.model_loaded = false;
+    ids_model.attack_types = {'NORMAL', 'FLOODING', 'SPOOFING', 'INJECTION', ...
+                             'EXPLOITATION', 'MISINFORMATION', 'RESOURCE_DRAIN'};
+    ids_model.feature_weights = rand(43, 1); % Random weights for simulation
+    ids_model = loadIDSModel(ids_model); % Try to load ONNX model
+end
+
+function ids_model = loadIDSModel(ids_model)
+    try
+         ids_model.net = importNetworkFromONNX('disaster_mesh_ids.onnx');
+         ids_model.model_loaded = true;
+         fprintf('ONNX model loaded successfully\n');
+    catch ME
+         fprintf('Failed to load ONNX model: %s\n', ME.message);
+         fprintf('Using simplified simulation model instead\n');
+         ids_model.model_loaded = false;
+    end
+    
+    % For simulation purposes, we'll use a simplified model
+    ids_model.model_loaded = true; % Set to true when you integrate ONNX
+    if ids_model.model_loaded == false
+        fprintf('Using simplified IDS model for simulation\n');
+    end
+end
+
+%% Node Operation Functions
+function node = updateNeighbors(node, all_nodes, transmission_range)
+    node.neighbors = [];
+    for i = 1:length(all_nodes)
+        if all_nodes(i).id ~= node.id && all_nodes(i).is_active
+            distance = norm(node.position - all_nodes(i).position);
+            if distance <= transmission_range
+                node.neighbors(end+1) = all_nodes(i).id;
+            end
+        end
+    end
+end
+
+function [node, message] = sendMessage(node, content, msg_type, destination_id, current_time)
+    if ~node.is_active || node.battery_level < 0.1
+        message = [];
+        return;
+    end
+    
+    message = struct();
+    message.id = generateMessageID();
+    message.source_id = node.id;
+    message.destination_id = destination_id;
+    message.content = content;
+    message.type = msg_type;
+    message.timestamp = current_time;
+    message.ttl = 10;
+    message.hop_count = 0;
+    message.route_path = {node.id};
+    message.size_bytes = length(content);
+    message.is_attack = node.is_attacker && strcmp(msg_type, 'ATTACK');
+    
+    % Add to global message log
+    global simulation_data;
+    
+    % Safe way to add to struct array
+    if isempty(simulation_data.messages)
+        simulation_data.messages = message;
+    else
+        simulation_data.messages(end+1) = message;
+    end
+    
+    % Consume battery
+    node.battery_level = node.battery_level - 0.001;
+    
+    fprintf('Node %d sent message %s at time %.2f\n', node.id, message.id, current_time);
+end
+
+function [node, detection_result] = receiveMessage(node, message, current_time, sender_node)
+    detection_result = [];
+    
+    if ~node.is_active || node.battery_level < 0.1
+        return;
+    end
+    
+    % Store message in buffer
+    node.message_buffer{end+1} = message;
+    node.message_history{end+1} = message;
+    
+    % If not attacker, run IDS detection
+    if ~node.is_attacker
+        [node, detection_result] = runIDSDetection(node, message, sender_node, current_time);
+    end
+    
+    % Consume battery
+    node.battery_level = node.battery_level - 0.0005;
+end
+
+function [node, detection_result] = runIDSDetection(node, message, sender_node, current_time)
+    start_time = tic;
+    
+    % Extract features for IDS
+    features = extractMessageFeatures(node, message, sender_node, current_time);
+    
+    % Run IDS model
+    [is_attack, attack_type, confidence] = predictAttack(node.ids_model, features);
+    
+    processing_time = toc(start_time) * 1000; % Convert to milliseconds
+    
+    detection_result = struct();
+    detection_result.message_id = message.id;
+    detection_result.is_attack = is_attack;
+    detection_result.attack_type = attack_type;
+    detection_result.confidence = confidence;
+    detection_result.threat_level = assessThreatLevel(attack_type, confidence);
+    detection_result.processing_time_ms = processing_time;
+    detection_result.detector_id = node.id;
+    detection_result.timestamp = current_time;
+    
+    % Process detection result
+    node = processDetectionResult(node, detection_result, message);
+    
+    % Add to global detection log
+    global simulation_data;
+    if isempty(simulation_data.detections)
+        simulation_data.detections = detection_result;  % First detection
+    else
+        simulation_data.detections(end+1) = detection_result;  % Subsequent detections
+    end
+
+end
+
+function features = extractMessageFeatures(node, message, sender_node, current_time)
+    % Extract comprehensive features for IDS detection
+    features = zeros(1, 43); % Matching the Python model's feature count
+    
+    % Network topology features
+    features(1) = length(node.neighbors) / 10; % node_density (normalized)
+    features(2) = calculateIsolationFactor(node); % isolation_factor
+    features(3) = getEmergencyPriority(message); % emergency_priority
+    features(4) = calculateHopReliability(message); % hop_reliability
+    features(5) = 0.2; % network_fragmentation (simulated)
+    features(6) = length(node.neighbors); % critical_node_count
+    features(7) = 0.7; % backup_route_availability (simulated)
+    
+    % Message content analysis
+    features(8) = length(message.content); % message_length
+    features(9) = calculateEntropy(message.content); % entropy_score
+    features(10) = calculateSpecialCharRatio(message.content); % special_char_ratio
+    features(11) = calculateNumericRatio(message.content); % numeric_ratio
+    features(12) = countEmergencyKeywords(message.content); % emergency_keyword_count
+    features(13) = countSuspiciousURLs(message.content); % suspicious_url_count
+    features(14) = countCommandPatterns(message.content); % command_pattern_count
+    
+    % Traffic pattern analysis
+    features(15) = calculateMessageFrequency(node, current_time); % message_frequency
+    features(16) = 0.3; % burst_intensity (simulated)
+    features(17) = 0.2; % inter_arrival_variance (simulated)
+    features(18) = 0.8; % size_consistency (simulated)
+    features(19) = 0.7; % timing_regularity (simulated)
+    features(20) = 0.1; % volume_anomaly_score (simulated)
+    
+    % Behavioral fingerprinting
+    features(21) = getSenderReputation(node, message.source_id); % sender_reputation
+    features(22) = 0.4; % message_similarity_score (simulated)
+    features(23) = 0.7; % response_pattern (simulated)
+    features(24) = 0.6; % interaction_diversity (simulated)
+    features(25) = 0.8; % temporal_consistency (simulated)
+    features(26) = 0.9; % language_consistency (simulated)
+    
+    % Protocol-level features
+    features(27) = calculateTTLAnomaly(message); % ttl_anomaly
+    features(28) = 0.05; % sequence_gap_score (simulated)
+    features(29) = 0.1; % routing_anomaly (simulated)
+    features(30) = 0.95; % header_integrity (simulated)
+    features(31) = 0.9; % encryption_consistency (simulated)
+    features(32) = 0.95; % protocol_compliance_score (simulated)
+    
+    % Resource and context awareness
+    features(33) = 1 - node.battery_level; % battery_impact_score
+    features(34) = calculateProcessingLoad(node); % processing_load
+    features(35) = 0.4; % memory_footprint (simulated)
+    features(36) = calculateSignalStrength(node, sender_node); % signal_strength_factor
+    features(37) = 0.6; % mobility_pattern (simulated)
+    features(38) = getEmergencyContextScore(message); % emergency_context_score
+    
+    % Multi-hop mesh specific
+    features(39) = 0.8; % route_stability (simulated)
+    features(40) = 0.7; % forwarding_behavior (simulated)
+    features(41) = getSenderReputation(node, message.source_id); % neighbor_trust_score
+    features(42) = 0.8; % mesh_connectivity_health (simulated)
+    features(43) = 0.7; % redundancy_factor (simulated)
+end
+
+%% Feature Calculation Functions
+function isolation_factor = calculateIsolationFactor(node)
+    if length(node.neighbors) == 0
+        isolation_factor = 1.0;
+    else
+        isolation_factor = max(0, 1 - length(node.neighbors) / 8);
+    end
+end
+
+function priority = getEmergencyPriority(message)
+    emergency_keywords = {'emergency', 'help', 'rescue', 'medical', 'fire', 'disaster'};
+    content_lower = lower(message.content);
+    priority = 0.3; % base priority
+    
+    for i = 1:length(emergency_keywords)
+        if contains(content_lower, emergency_keywords{i})
+            priority = priority + 0.2;
+        end
+    end
+    priority = min(priority, 1.0);
+end
+
+function reliability = calculateHopReliability(message)
+    % Simulate hop reliability based on hop count and TTL
+    if message.hop_count == 0
+        reliability = 0.9;
+    else
+        reliability = 0.9 * (0.95 ^ message.hop_count);
+    end
+end
+
+function entropy = calculateEntropy(text)
+    if isempty(text)
+        entropy = 0;
+        return;
+    end
+    
+    [unique_chars, ~, idx] = unique(text);
+    counts = accumarray(idx, 1);
+    probabilities = counts / length(text);
+    entropy = -sum(probabilities .* log2(probabilities + eps));
+    entropy = min(entropy, 8.0); % Cap at 8 bits
+end
+
+function ratio = calculateSpecialCharRatio(text)
+    if isempty(text)
+        ratio = 0;
+        return;
+    end
+    
+    % Use MATLAB's vectorized operations
+    is_letter = isletter(text);
+    is_digit = (text >= '0' & text <= '9');
+    is_space = (text == ' ');
+    
+    % Special characters are those that are NOT letters, digits, or spaces
+    is_special = ~(is_letter | is_digit | is_space);
+    
+    ratio = sum(is_special) / length(text);
+end
+
+function ratio = calculateNumericRatio(text)
+    if isempty(text)
+        ratio = 0;
+        return;
+    end
+    
+    % Count digits using vectorized comparison
+    is_digit = (text >= '0' & text <= '9');
+    ratio = sum(is_digit) / length(text);
+end
+
+function count = countEmergencyKeywords(text)
+    emergency_keywords = {'emergency', 'help', 'rescue', 'medical', 'fire', 'disaster', ...
+                         'ambulance', 'hospital', 'injured', 'trapped', 'evacuation'};
+    text_lower = lower(text);
+    count = 0;
+    for i = 1:length(emergency_keywords)
+        if contains(text_lower, emergency_keywords{i})
+            count = count + 1;
+        end
+    end
+end
+
+function count = countSuspiciousURLs(text)
+    url_patterns = {'http://', 'https://', 'www.', '.com', '.org'};
+    count = 0;
+    text_lower = lower(text);
+    for i = 1:length(url_patterns)
+        if contains(text_lower, url_patterns{i})
+            count = count + 1;
+        end
+    end
+    
+    % Check for suspicious URL characteristics
+    if contains(text_lower, 'click') && count > 0
+        count = count + 2;
+    end
+end
+
+function count = countCommandPatterns(text)
+    command_patterns = {'delete', 'drop', 'exec', 'system', 'cmd', 'bash', 'sh'};
+    text_lower = lower(text);
+    count = 0;
+    for i = 1:length(command_patterns)
+        if contains(text_lower, command_patterns{i})
+            count = count + 1;
+        end
+    end
+end
+
+function freq = calculateMessageFrequency(node, current_time)
+    % Calculate message frequency in the last minute
+    recent_messages = 0;
+    lookback_time = 60; % seconds
+    
+    for i = 1:length(node.message_history)
+        if current_time - node.message_history{i}.timestamp <= lookback_time
+            recent_messages = recent_messages + 1;
+        end
+    end
+    
+    freq = recent_messages / (lookback_time / 60); % messages per minute
+end
+
+function reputation = getSenderReputation(node, sender_id)
+    if node.reputation_scores.isKey(num2str(sender_id))
+        reputation = node.reputation_scores(num2str(sender_id));
+    else
+        reputation = 0.8; % Default neutral reputation
+        node.reputation_scores(num2str(sender_id)) = reputation;
+    end
+end
+
+function anomaly = calculateTTLAnomaly(message)
+    expected_ttl = 10 - message.hop_count;
+    if expected_ttl <= 0
+        anomaly = 1.0;
+    else
+        anomaly = abs(message.ttl - expected_ttl) / expected_ttl;
+    end
+    anomaly = min(anomaly, 1.0);
+end
+
+function load = calculateProcessingLoad(node)
+    load = (1 - node.processing_power) * 0.5 + length(node.message_buffer) / 100 * 0.5;
+    load = min(load, 1.0);
+end
+
+function strength = calculateSignalStrength(node, sender_node)
+    if isempty(sender_node)
+        strength = 0.7; % Default
+        return;
+    end
+    
+    distance = norm(node.position - sender_node.position);
+    max_distance = 50; % transmission range
+    strength = max(0.1, 1 - (distance / max_distance));
+end
+
+function score = getEmergencyContextScore(message)
+    score = getEmergencyPriority(message);
+    
+    % Adjust based on message type
+    if strcmp(message.type, 'EMERGENCY')
+        score = score + 0.2;
+    elseif strcmp(message.type, 'ATTACK')
+        score = score - 0.5;
+    end
+    
+    score = max(0, min(score, 1.0));
+end
+
+%% IDS Prediction Functions
+function [is_attack, attack_type, confidence] = predictAttack(ids_model, features)
+    if ids_model.model_loaded
+        prediction = predict(ids_model.net, features');
+        [confidence, idx] = max(prediction);
+        attack_type = ids_model.attack_types{idx};
+        is_attack = ~strcmp(attack_type, 'NORMAL');
+    else
+        % Use simplified simulation model
+        [is_attack, attack_type, confidence] = simulateDetection(ids_model, features);
+    end
+end
+
+function [is_attack, attack_type, confidence] = simulateDetection(ids_model, features)
+    % Simplified detection logic for simulation
+    
+    % Normalize features
+    features_norm = features / max(abs(features) + eps);
+    
+    % Calculate risk score using weighted features
+    risk_score = sum(features_norm .* ids_model.feature_weights');
+    risk_score = 1 / (1 + exp(-risk_score)); % Sigmoid activation
+    
+    % Determine if it's an attack based on specific feature patterns
+    is_attack = false;
+    attack_type = 'NORMAL';
+    confidence = 0.5;
+    
+    % Flooding detection (high message frequency + large size)
+    if features(15) > 5 && features(8) > 500
+        is_attack = true;
+        attack_type = 'FLOODING';
+        confidence = 0.8 + 0.15 * rand();
+    
+    % Spoofing detection (suspicious URLs + low reputation)
+    elseif features(13) > 0 && features(21) < 0.5
+        is_attack = true;
+        attack_type = 'SPOOFING';
+        confidence = 0.7 + 0.2 * rand();
+    
+    % Injection detection (command patterns + special characters)
+    elseif features(14) > 0 && features(10) > 0.3
+        is_attack = true;
+        attack_type = 'INJECTION';
+        confidence = 0.75 + 0.2 * rand();
+    
+    % Resource drain detection (high battery impact + large messages)
+    elseif features(33) > 0.8 && features(8) > 300
+        is_attack = true;
+        attack_type = 'RESOURCE_DRAIN';
+        confidence = 0.6 + 0.25 * rand();
+    
+    % General anomaly detection
+    elseif risk_score > 0.7
+        is_attack = true;
+        attack_type = 'EXPLOITATION';
+        confidence = risk_score;
+    end
+    
+    % Add some noise to make it realistic
+    confidence = min(0.99, max(0.1, confidence + 0.05 * randn()));
+end
+
+function threat_level = assessThreatLevel(attack_type, confidence)
+    if strcmp(attack_type, 'NORMAL')
+        threat_level = 0; % NONE
+    elseif confidence < 0.5
+        threat_level = 1; % LOW
+    elseif (strcmp(attack_type, 'MISINFORMATION') || strcmp(attack_type, 'RESOURCE_DRAIN')) && confidence < 0.8
+        threat_level = 2; % MEDIUM
+    elseif (strcmp(attack_type, 'SPOOFING') || strcmp(attack_type, 'FLOODING')) && confidence > 0.7
+        threat_level = 3; % HIGH
+    elseif (strcmp(attack_type, 'INJECTION') || strcmp(attack_type, 'EXPLOITATION')) && confidence > 0.6
+        threat_level = 4; % CRITICAL
+    else
+        threat_level = 2; % MEDIUM
+    end
+end
+
+function node = processDetectionResult(node, detection_result, original_message)
+    % Update detection statistics
+    if original_message.is_attack
+        if detection_result.is_attack
+            node.detection_stats.tp = node.detection_stats.tp + 1; % True Positive
+        else
+            node.detection_stats.fn = node.detection_stats.fn + 1; % False Negative
+        end
+    else
+        if detection_result.is_attack
+            node.detection_stats.fp = node.detection_stats.fp + 1; % False Positive
+        else
+            node.detection_stats.tn = node.detection_stats.tn + 1; % True Negative
+        end
+    end
+    
+    % Update sender reputation
+    sender_id = num2str(original_message.source_id);
+    current_reputation = getSenderReputation(node, original_message.source_id);
+    
+    if detection_result.is_attack && detection_result.confidence > 0.7
+        new_reputation = current_reputation * 0.8; % Decrease reputation
+    elseif ~detection_result.is_attack
+        new_reputation = min(1.0, current_reputation + 0.01); % Slightly increase reputation
+    else
+        new_reputation = current_reputation;
+    end
+    
+    node.reputation_scores(sender_id) = new_reputation;
+    
+    % Log significant detections
+    if detection_result.is_attack && detection_result.confidence > 0.6
+        fprintf('Node %d detected attack: %s (confidence: %.2f) from message %s\n', ...
+            node.id, detection_result.attack_type, detection_result.confidence, detection_result.message_id);
+    end
+end
+
+%% Attacker Functions
+function node = launchAttack(node, current_time, target_nodes)
+    if current_time - node.last_attack_time < node.attack_frequency
+        return;
+    end
+    
+    node.last_attack_time = current_time;
+    
+    % Select random target
+    if ~isempty(target_nodes)
+        target_id = target_nodes(randi(length(target_nodes)));
+    else
+        target_id = randi(15); % Random normal node
+    end
+    
+    % Generate attack message based on strategy
+    attack_content = generateAttackContent(node);
+    
+    fprintf('ATTACKER Node %d launching %s attack at time %.2f\n', ...
+        node.id, node.attack_strategy, current_time);
+    
+    % Send attack message
+    message = sendMessage(node, attack_content, 'ATTACK', target_id, current_time);
+end
+
+function content = generateAttackContent(node)
+    switch node.attack_strategy
+        case 'FLOODING'
+            content = ['FLOOD_ATTACK_', repmat('A', 1, 500), '_END'];
+            
+        case 'SPOOFING'
+            spoofing_messages = {
+                'URGENT: Emergency services account suspended! Verify at http://fake-emergency.com now!',
+                'FEMA Alert: Click http://disaster-relief.fake to claim emergency supplies',
+                'Police Notice: Evacuation mandatory. Confirm identity at http://emergency-verify.fake'
+            };
+            content = spoofing_messages{randi(length(spoofing_messages))};
+            
+        case 'INJECTION'
+            injection_payloads = {
+                'Emergency update: {"command": "DELETE FROM victims WHERE location=*"}',
+                'System alert: ; rm -rf /emergency/database; echo "hacked"',
+                'Alert<script>alert("XSS Attack")</script>evacuation needed'
+            };
+            content = injection_payloads{randi(length(injection_payloads))};
+            
+        case 'RESOURCE_DRAIN'
+            content = [repmat('X', 1, 1000), ' - Emergency broadcast system overload test'];
+            
+        otherwise
+            content = 'Generic attack message with suspicious content';
+    end
+end
+
+%% Message Generation Functions
+function content = generateNormalMessage()
+    normal_messages = {
+        'Emergency: Medical assistance needed at building 5, floor 3',
+        'Status update: Rescue team deployed to sector Alpha',
+        'Resource request: Need water supplies at evacuation point',
+        'Location update: Safe passage established through route 7',
+        'Personnel check: All team members accounted for',
+        'Medical update: 3 injured civilians transported to field hospital',
+        'Communication test: Network connectivity verified',
+        'Supply status: Food distribution at checkpoint Charlie',
+        'Weather alert: Storm approaching from southeast',
+        'Evacuation notice: Clear area around damaged structure'
+    };
+    
+    content = normal_messages{randi(length(normal_messages))};
+end
+
+function message_id = generateMessageID()
+    persistent counter;
+    if isempty(counter)
+        counter = 1;
+    else
+        counter = counter + 1;
+    end
+    message_id = sprintf('MSG_%06d', counter);
+end
+
+%% Visualization Functions
+function visualizeNetwork(nodes, current_time)
+    figure(1);
+    clf;
+    hold on;
+    
+    % Plot normal nodes
+    for i = 1:length(nodes)
+        if ~nodes(i).is_attacker
+            scatter(nodes(i).position(1), nodes(i).position(2), 100, 'b', 'filled');
+            text(nodes(i).position(1)+5, nodes(i).position(2)+5, sprintf('N%d', nodes(i).id), ...
+                'FontSize', 8, 'Color', 'blue');
+        end
+    end
+    
+    % Plot attacker nodes
+    for i = 1:length(nodes)
+        if nodes(i).is_attacker
+            scatter(nodes(i).position(1), nodes(i).position(2), 120, 'r', 'filled', 's');
+            text(nodes(i).position(1)+5, nodes(i).position(2)+5, sprintf('A%d', nodes(i).id), ...
+                'FontSize', 8, 'Color', 'red', 'FontWeight', 'bold');
+        end
+    end
+    
+    % Draw connections
+    for i = 1:length(nodes)
+        for j = 1:length(nodes(i).neighbors)
+            neighbor_id = nodes(i).neighbors(j);
+            neighbor_idx = find([nodes.id] == neighbor_id);
+            if ~isempty(neighbor_idx)
+                plot([nodes(i).position(1), nodes(neighbor_idx).position(1)], ...
+                     [nodes(i).position(2), nodes(neighbor_idx).position(2)], ...
+                     'k--', 'LineWidth', 0.5, 'Color', [0.7 0.7 0.7]);
+            end
+        end
+    end
+    
+    xlim([0 200]);
+    ylim([0 200]);
+    grid on;
+    title(sprintf('Bluetooth Mesh Network at Time: %.1f seconds', current_time));
+    xlabel('X Position (meters)');
+    ylabel('Y Position (meters)');
+    legend({'Normal Nodes', 'Attacker Nodes'}, 'Location', 'best');
+    hold off;
+    drawnow;
+end
+
+function updateStatistics(current_time)
+    global simulation_data;
+    
+    % Calculate statistics for the last 10 minutes
+    time_window = 600; % 10 minutes
+    start_time = max(0, current_time - time_window);
+    
+    % Filter messages and detections within time window
+    recent_messages = simulation_data.messages([simulation_data.messages.timestamp] >= start_time);
+    recent_detections = simulation_data.detections([simulation_data.detections.timestamp] >= start_time);
+    
+    % Calculate statistics
+    stats = struct();
+    stats.current_time = current_time;
+    stats.total_messages = length(recent_messages);
+    stats.attack_messages = sum([recent_messages.is_attack]);
+    stats.normal_messages = stats.total_messages - stats.attack_messages;
+    stats.total_detections = length(recent_detections);
+    stats.attacks_detected = sum([recent_detections.is_attack]);
+    stats.detection_rate = stats.attacks_detected / max(stats.attack_messages, 1);
+    
+    % Calculate per-attack-type statistics
+    attack_types = {'FLOODING', 'SPOOFING', 'INJECTION', 'EXPLOITATION', 'MISINFORMATION', 'RESOURCE_DRAIN'};
+    for i = 1:length(attack_types)
+        type_detections = recent_detections(strcmp({recent_detections.attack_type}, attack_types{i}));
+        stats.(sprintf('%s_detected', lower(attack_types{i}))) = length(type_detections);
+    end
+    
+    % Calculate average confidence and processing time
+    if ~isempty(recent_detections)
+        stats.avg_confidence = mean([recent_detections.confidence]);
+        stats.avg_processing_time = mean([recent_detections.processing_time_ms]);
+    else
+        stats.avg_confidence = 0;
+        stats.avg_processing_time = 0;
+    end
+    
+    simulation_data.statistics = stats;
+end
+
+function displayStatistics(stats)
+    fprintf('\n=== NETWORK STATISTICS (Last 10 minutes) ===\n');
+    fprintf('Current Simulation Time: %.1f seconds (%.1f minutes)\n', stats.current_time, stats.current_time/60);
+    fprintf('Total Messages: %d\n', stats.total_messages);
+    fprintf('Normal Messages: %d\n', stats.normal_messages);
+    fprintf('Attack Messages: %d\n', stats.attack_messages);
+    fprintf('Total Detections: %d\n', stats.total_detections);
+    fprintf('Attacks Detected: %d\n', stats.attacks_detected);
+    fprintf('Detection Rate: %.2f%%\n', stats.detection_rate * 100);
+    
+    if stats.avg_confidence > 0
+        fprintf('Average Detection Confidence: %.3f\n', stats.avg_confidence);
+        fprintf('Average Processing Time: %.2f ms\n', stats.avg_processing_time);
+    end
+    
+    fprintf('\n--- Attack Type Breakdown ---\n');
+    attack_types = {'flooding', 'spoofing', 'injection', 'exploitation', 'misinformation', 'resource_drain'};
+    for i = 1:length(attack_types)
+        field_name = sprintf('%s_detected', attack_types{i});
+        if isfield(stats, field_name)
+            fprintf('%s: %d detections\n', upper(attack_types{i}), stats.(field_name));
+        end
+    end
+    fprintf('===========================================\n\n');
+end
+
+function plotRealTimeStatistics(stats_history)
+    if length(stats_history) < 2
+        return;
+    end
+    
+    figure(2);
+    
+    % Extract time series data
+    times = [stats_history.current_time] / 60; % Convert to minutes
+    total_messages = [stats_history.total_messages];
+    attack_messages = [stats_history.attack_messages];
+    attacks_detected = [stats_history.attacks_detected];
+    detection_rates = [stats_history.detection_rate] * 100;
+    
+    % Create subplots
+    subplot(2, 2, 1);
+    plot(times, total_messages, 'b-', 'LineWidth', 2);
+    hold on;
+    plot(times, attack_messages, 'r-', 'LineWidth', 2);
+    xlabel('Time (minutes)');
+    ylabel('Message Count');
+    title('Message Traffic Over Time');
+    legend('Total Messages', 'Attack Messages', 'Location', 'best');
+    grid on;
+    
+    subplot(2, 2, 2);
+    plot(times, attacks_detected, 'g-', 'LineWidth', 2);
+    xlabel('Time (minutes)');
+    ylabel('Attacks Detected');
+    title('IDS Detection Performance');
+    grid on;
+    
+    subplot(2, 2, 3);
+    plot(times, detection_rates, 'm-', 'LineWidth', 2);
+    xlabel('Time (minutes)');
+    ylabel('Detection Rate (%)');
+    title('Detection Rate Over Time');
+    ylim([0 100]);
+    grid on;
+    
+    % Battery levels simulation
+    subplot(2, 2, 4);
+    battery_sim = max(10, 90 - times * 2); % 2% per minute depletion, min 10%
+    plot(times, battery_sim, 'color', [1 0.5 0], 'LineWidth', 2);
+    ylim([0 100]);
+    ylabel('Average Battery Level (%)');
+    xlabel('Time (minutes)');
+    title('Network Resource Status');
+    grid on;
+    
+    sgtitle('Real-time Network Monitoring Dashboard');
+    drawnow;
+end
+
+function generateComprehensiveReport(nodes, stats_history)
+    global simulation_data NUM_NORMAL_NODES NUM_ATTACK_NODES SIMULATION_TIME MESSAGE_INTERVAL AREA_SIZE;
+    
+    fprintf('\n\n');
+    fprintf('################################################################\n');
+    fprintf('#                COMPREHENSIVE SIMULATION REPORT              #\n');
+    fprintf('################################################################\n\n');
+    
+    % Overall simulation summary
+    if ~isempty(stats_history)
+        final_stats = stats_history(end);
+        fprintf('=== SIMULATION OVERVIEW ===\n');
+        fprintf('Total Simulation Time: %.1f minutes\n', final_stats.current_time/60);
+        fprintf('Network Size: %d nodes (%d normal, %d attackers)\n', ...
+            length(nodes), sum(~[nodes.is_attacker]), sum([nodes.is_attacker]));
+        fprintf('Message Transmission Interval: %d seconds\n', MESSAGE_INTERVAL);
+        fprintf('Total Messages Generated: %d\n', length(simulation_data.messages));
+        fprintf('Total IDS Detections: %d\n', length(simulation_data.detections));
+    end
+    
+    % Network topology analysis
+    fprintf('\n=== NETWORK TOPOLOGY ANALYSIS ===\n');
+    neighbor_counts = arrayfun(@(x) length(x.neighbors), nodes);
+    avg_neighbors = mean(neighbor_counts);
+    max_neighbors = max(neighbor_counts);
+    min_neighbors = min(neighbor_counts);
+    
+    fprintf('Average Neighbors per Node: %.2f\n', avg_neighbors);
+    fprintf('Maximum Neighbors: %d\n', max_neighbors);
+    fprintf('Minimum Neighbors: %d\n', min_neighbors);
+    fprintf('Network Connectivity: %.2f%%\n', (avg_neighbors / (length(nodes)-1)) * 100);
+    
+    % IDS Performance Analysis
+    fprintf('\n=== IDS PERFORMANCE ANALYSIS ===\n');
+    
+    % Calculate overall performance metrics
+    normal_nodes = nodes(~[nodes.is_attacker]);
+    total_tp = sum(arrayfun(@(x) x.detection_stats.tp, normal_nodes));
+    total_fp = sum(arrayfun(@(x) x.detection_stats.fp, normal_nodes));
+    total_tn = sum(arrayfun(@(x) x.detection_stats.tn, normal_nodes));
+    total_fn = sum(arrayfun(@(x) x.detection_stats.fn, normal_nodes));
+    
+    if (total_tp + total_fp + total_tn + total_fn) > 0
+        accuracy = (total_tp + total_tn) / (total_tp + total_fp + total_tn + total_fn);
+        precision = total_tp / max(total_tp + total_fp, 1);
+        recall = total_tp / max(total_tp + total_fn, 1);
+        f1_score = 2 * (precision * recall) / max(precision + recall, eps);
+        fpr = total_fp / max(total_fp + total_tn, 1);
+        
+        fprintf('Overall IDS Accuracy: %.3f (%.1f%%)\n', accuracy, accuracy*100);
+        fprintf('Precision: %.3f\n', precision);
+        fprintf('Recall (Detection Rate): %.3f\n', recall);
+        fprintf('F1-Score: %.3f\n', f1_score);
+        fprintf('False Positive Rate: %.3f\n', fpr);
+    end
+    
+    fprintf('\nConfusion Matrix:\n');
+    fprintf('                 Predicted\n');
+    fprintf('                Normal  Attack\n');
+    fprintf('Actual Normal   %4d    %4d\n', total_tn, total_fp);
+    fprintf('Actual Attack   %4d    %4d\n', total_fn, total_tp);
+    
+    % Per-node analysis
+    fprintf('\n=== PER-NODE ANALYSIS ===\n');
+    fprintf('Node ID | Type    | Neighbors | Battery | TP | FP | TN | FN | Accuracy\n');
+    fprintf('--------|---------|-----------|---------|----|----|----|----|----------\n');
+    
+    for i = 1:length(nodes)
+        node = nodes(i);
+        if ~node.is_attacker
+            node_total = node.detection_stats.tp + node.detection_stats.fp + ...
+                        node.detection_stats.tn + node.detection_stats.fn;
+            if node_total > 0
+                node_accuracy = (node.detection_stats.tp + node.detection_stats.tn) / node_total;
+            else
+                node_accuracy = 0;
+            end
+            
+            fprintf('%7d | Normal  | %9d | %6.1f%% | %2d | %2d | %2d | %2d | %7.3f\n', ...
+                node.id, length(node.neighbors), node.battery_level*100, ...
+                node.detection_stats.tp, node.detection_stats.fp, ...
+                node.detection_stats.tn, node.detection_stats.fn, node_accuracy);
+        else
+            fprintf('%7d | Attack  | %9d | %6.1f%% | -- | -- | -- | -- | -------\n', ...
+                node.id, length(node.neighbors), node.battery_level*100);
+        end
+    end
+    
+    % Attack analysis
+    fprintf('\n=== ATTACK ANALYSIS ===\n');
+    attack_messages = simulation_data.messages([simulation_data.messages.is_attack]);
+    
+    if ~isempty(attack_messages)
+        fprintf('Total Attack Messages: %d\n', length(attack_messages));
+        
+        % Count by attack type (from attacker nodes)
+        attacker_nodes = nodes([nodes.is_attacker]);
+        for i = 1:length(attacker_nodes)
+            fprintf('Attacker Node %d Strategy: %s\n', attacker_nodes(i).id, attacker_nodes(i).attack_strategy);
+        end
+        
+        % Detection success by attack type
+        detected_attacks = simulation_data.detections([simulation_data.detections.is_attack]);
+        if ~isempty(detected_attacks)
+            unique_types = unique({detected_attacks.attack_type});
+            fprintf('\nDetection Success by Attack Type:\n');
+            for i = 1:length(unique_types)
+                type_count = sum(strcmp({detected_attacks.attack_type}, unique_types{i}));
+                fprintf('%s: %d detections\n', unique_types{i}, type_count);
+            end
+        end
+    end
+    
+    % Resource consumption analysis
+    fprintf('\n=== RESOURCE CONSUMPTION ANALYSIS ===\n');
+    initial_battery = 0.9; % Assumed initial average
+    current_batteries = [nodes.battery_level];
+    current_avg_battery = mean(current_batteries);
+    battery_consumed = (initial_battery - current_avg_battery) * 100;
+    
+    fprintf('Average Battery Consumption: %.1f%%\n', battery_consumed);
+    fprintf('Current Average Battery Level: %.1f%%\n', current_avg_battery * 100);
+    fprintf('Lowest Battery Level: %.1f%%\n', min(current_batteries) * 100);
+    
+    % Calculate average processing times
+    if ~isempty(simulation_data.detections)
+        processing_times = [simulation_data.detections.processing_time_ms];
+        avg_processing_time = mean(processing_times);
+        max_processing_time = max(processing_times);
+        fprintf('Average IDS Processing Time: %.2f ms\n', avg_processing_time);
+        fprintf('Maximum IDS Processing Time: %.2f ms\n', max_processing_time);
+    end
+    
+    % Network efficiency metrics
+    fprintf('\n=== NETWORK EFFICIENCY METRICS ===\n');
+    if ~isempty(simulation_data.messages)
+        hop_counts = [simulation_data.messages.hop_count];
+        total_hops = sum(hop_counts);
+        avg_hops = total_hops / length(simulation_data.messages);
+        fprintf('Average Hop Count per Message: %.2f\n', avg_hops);
+        
+        % Message delivery success estimation
+        ttl_values = [simulation_data.messages.ttl];
+        successful_messages = sum(ttl_values > 0);
+        delivery_rate = successful_messages / length(simulation_data.messages);
+        fprintf('Estimated Message Delivery Rate: %.1f%%\n', delivery_rate * 100);
+    end
+    
+    % Time-based analysis
+    if length(stats_history) > 1
+        fprintf('\n=== TEMPORAL ANALYSIS ===\n');
+        detection_rates = [stats_history.detection_rate];
+        avg_detection_rate = mean(detection_rates);
+        std_detection_rate = std(detection_rates);
+        
+        fprintf('Average Detection Rate: %.1f%%\n', avg_detection_rate * 100);
+        fprintf('Detection Rate Stability (StdDev): %.3f\n', std_detection_rate);
+        
+        % Peak analysis
+        message_counts = [stats_history.total_messages];
+        [max_messages, max_idx] = max(message_counts);
+        peak_time = stats_history(max_idx).current_time / 60;
+        fprintf('Peak Message Activity: %d messages at %.1f minutes\n', max_messages, peak_time);
+    end
+    
+    % Recommendations
+    fprintf('\n=== RECOMMENDATIONS ===\n');
+    if total_tp + total_fn > 0
+        detection_rate = total_tp / (total_tp + total_fn);
+        if detection_rate < 0.8
+            fprintf('• Detection rate (%.1f%%) is below 80%%. Consider model retraining.\n', detection_rate*100);
+        end
+    end
+    
+    if total_fp / max(total_fp + total_tn, 1) > 0.1
+        fprintf('• False positive rate is high. Consider adjusting detection thresholds.\n');
+    end
+    
+    if current_avg_battery < 0.3
+        fprintf('• Average battery level is low. Consider power optimization.\n');
+    end
+    
+    if ~isempty(simulation_data.detections)
+        avg_proc_time = mean([simulation_data.detections.processing_time_ms]);
+        if avg_proc_time > 50
+            fprintf('• IDS processing time is high. Consider model optimization.\n');
+        end
+    end
+    
+    fprintf('\n################################################################\n');
+    fprintf('#                     END OF REPORT                           #\n');
+    fprintf('################################################################\n\n');
+end
+
+function saveSimulationResults(nodes, stats_history)
+    global simulation_data NUM_NORMAL_NODES NUM_ATTACK_NODES SIMULATION_TIME MESSAGE_INTERVAL AREA_SIZE;
+    
+    % Create results directory
+    results_dir = 'simulation_results';
+    if ~exist(results_dir, 'dir')
+        mkdir(results_dir);
+    end
+    
+    % Generate timestamp for filenames
+    timestamp = datestr(now, 'yyyymmdd_HHMMSS');
+    
+    % Save simulation data
+    filename = fullfile(results_dir, sprintf('simulation_data_%s.mat', timestamp));
+    save(filename, 'nodes', 'stats_history', 'simulation_data', 'NUM_NORMAL_NODES', ...
+         'NUM_ATTACK_NODES', 'SIMULATION_TIME', 'MESSAGE_INTERVAL');
+    
+    fprintf('Simulation results saved to: %s\n', filename);
+    
+    % Export statistics to CSV
+    if ~isempty(stats_history)
+        stats_table = struct2table(stats_history);
+        csv_filename = fullfile(results_dir, sprintf('statistics_%s.csv', timestamp));
+        writetable(stats_table, csv_filename);
+        fprintf('Statistics exported to: %s\n', csv_filename);
+    end
+    
+    % Export detection results to CSV if we have detections
+    if ~isempty(simulation_data.detections)
+        detections_struct = simulation_data.detections;
+        
+        % Convert struct array to table
+        if length(detections_struct) > 0
+            detection_data = struct();
+            detection_data.message_id = {detections_struct.message_id}';
+            detection_data.is_attack = logical([detections_struct.is_attack]');
+            detection_data.attack_type = {detections_struct.attack_type}';
+            detection_data.confidence = [detections_struct.confidence]';
+            detection_data.threat_level = [detections_struct.threat_level]';
+            detection_data.processing_time_ms = [detections_struct.processing_time_ms]';
+            detection_data.detector_id = [detections_struct.detector_id]';
+            detection_data.timestamp = [detections_struct.timestamp]';
+            
+            detection_table = struct2table(detection_data);
+            detection_csv = fullfile(results_dir, sprintf('detections_%s.csv', timestamp));
+            writetable(detection_table, detection_csv);
+            fprintf('Detection results exported to: %s\n', detection_csv);
+        end
+    end
+end
+
+%% Main Simulation Function
+function runBluetoothMeshSimulation()
+    global simulation_data;
+    global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE ;
+
+    fprintf('Starting Bluetooth Mesh Network IDS Simulation...\n');
+    fprintf('Network Configuration:\n');
+    fprintf('- Normal Nodes: %d\n', NUM_NORMAL_NODES);
+    fprintf('- Attacker Nodes: %d\n', NUM_ATTACK_NODES);
+    fprintf('- Simulation Time: %d minutes\n', SIMULATION_TIME/60);
+    fprintf('- Message Interval: %d seconds\n', MESSAGE_INTERVAL);
+    fprintf('- Area Size: %dx%d meters\n\n', AREA_SIZE, AREA_SIZE);
+    
+    % Initialize nodes
+    fprintf('Initializing network nodes...\n');
+    nodes = [];
+    
+    % Create normal nodes with random positions
+    for i = 1:NUM_NORMAL_NODES
+        x = rand() * AREA_SIZE;
+        y = rand() * AREA_SIZE;
+        nodes = [nodes, createNormalNode(i, x, y)];
+    end
+    
+    % Create attacker nodes
+    for i = 1:NUM_ATTACK_NODES
+        x = rand() * AREA_SIZE;
+        y = rand() * AREA_SIZE;
+        attacker = createAttackerNode(NUM_NORMAL_NODES + i, x, y);
+        nodes = [nodes, attacker];
+    end
+    
+    % Initialize neighbor relationships
+    for i = 1:length(nodes)
+        nodes(i) = updateNeighbors(nodes(i), nodes, TRANSMISSION_RANGE);
+    end
+    
+    neighbor_counts = arrayfun(@(x) length(x.neighbors), nodes);
+    fprintf('Network initialized with %d nodes.\n', length(nodes));
+    fprintf('Average neighbors per node: %.2f\n\n', mean(neighbor_counts));
+    
+    % Simulation variables
+    current_time = 0;
+    last_message_time = 0;
+    last_stats_time = 0;
+    stats_history = struct([]); 
+    
+    fprintf('Starting simulation...\n\n');
+    
+    % Main simulation loop
+    while current_time < SIMULATION_TIME
+        simulation_data.current_time = current_time;
+        
+        % Update network topology (simulate node mobility - optional)
+        if mod(current_time, 60) == 0  % Update every minute
+            for i = 1:length(nodes)
+                nodes(i) = updateNeighbors(nodes(i), nodes, TRANSMISSION_RANGE);
+            end
+        end
+        
+        % Generate messages every MESSAGE_INTERVAL seconds
+        if current_time - last_message_time >= MESSAGE_INTERVAL
+            % Normal nodes send messages
+            active_normal_indices = find(~[nodes.is_attacker] & [nodes.is_active]);
+            
+            for i = 1:length(active_normal_indices)
+                idx = active_normal_indices(i);
+                if rand() < 0.7  % 70% chance to send a message
+                    content = generateNormalMessage();
+                    destination = randi(NUM_NORMAL_NODES);
+                    if destination ~= nodes(idx).id
+                        message = sendMessage(nodes(idx), content, 'DATA', destination, current_time);
+                    end
+                end
+            end
+            
+            % Heartbeat messages
+            for i = 1:length(active_normal_indices)
+                idx = active_normal_indices(i);
+                if rand() < 0.3  % 30% chance for heartbeat
+                    message = sendMessage(nodes(idx), 'HEARTBEAT', 'HEARTBEAT', 0, current_time);
+                end
+            end
+            
+            last_message_time = current_time;
+        end
+        
+        % Attacker actions
+        attacker_indices = find([nodes.is_attacker] & [nodes.is_active]);
+        normal_node_ids = [nodes(~[nodes.is_attacker]).id];
+        
+        for i = 1:length(attacker_indices)
+            idx = attacker_indices(i);
+            nodes(idx) = launchAttack(nodes(idx), current_time, normal_node_ids);
+        end
+        
+        % Message propagation simulation
+        all_messages = simulation_data.messages;
+        if ~isempty(all_messages)
+            recent_message_indices = find([all_messages.timestamp] > current_time - MESSAGE_INTERVAL);
+            
+            for i = 1:length(recent_message_indices)
+                msg_idx = recent_message_indices(i);
+                msg = all_messages(msg_idx);
+                
+                if msg.ttl > 0
+                    % Find source node
+                    source_node_idx = find([nodes.id] == msg.source_id);
+                    if ~isempty(source_node_idx)
+                        source_node = nodes(source_node_idx);
+                        
+                        % Simulate message reception by neighbors
+                        for j = 1:length(source_node.neighbors)
+                            neighbor_id = source_node.neighbors(j);
+                            neighbor_idx = find([nodes.id] == neighbor_id);
+                            
+                            if ~isempty(neighbor_idx) && nodes(neighbor_idx).is_active
+                                % Simulate transmission delay and success probability
+                                if rand() < 0.9  % 90% successful transmission
+                                    [nodes(neighbor_idx), detection_result] = receiveMessage(nodes(neighbor_idx), msg, current_time, source_node);
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        
+        % Update statistics every 30 seconds
+        if current_time - last_stats_time >= 30
+            updateStatistics(current_time);
+            
+            % Safe way to add to struct array
+            if isempty(stats_history)
+                stats_history = simulation_data.statistics;
+            else
+                stats_history(end+1) = simulation_data.statistics;
+            end
+            
+            % Display current statistics
+            displayStatistics(simulation_data.statistics);
+            
+            % Update visualizations
+            visualizeNetwork(nodes, current_time);
+            if length(stats_history) > 1
+                plotRealTimeStatistics(stats_history);
+            end
+            
+            last_stats_time = current_time;
+        end
+        
+        % Battery depletion simulation
+        if mod(current_time, 120) == 0  % Every 2 minutes
+            for i = 1:length(nodes)
+                nodes(i).battery_level = nodes(i).battery_level - 0.01; % 1% every 2 minutes
+                if nodes(i).battery_level <= 0
+                    nodes(i).is_active = false;
+                    fprintf('Node %d ran out of battery at time %.1f\n', nodes(i).id, current_time);
+                end
+            end
+        end
+        
+        % Time progression
+        current_time = current_time + 1;
+        pause(0.01); % Small delay for visualization
+    end
+    
+    fprintf('\nSimulation completed!\n');
+    
+    % Final statistics update
+    updateStatistics(current_time);
+    stats_history(end+1) = simulation_data.statistics;
+    
+    % Generate comprehensive report
+    generateComprehensiveReport(nodes, stats_history);
+    
+    % Final visualizations
+    visualizeNetwork(nodes, current_time);
+    plotRealTimeStatistics(stats_history);
+    
+    % Save results
+    saveSimulationResults(nodes, stats_history);
+end
+
+%% ONNX Model Integration Instructions
+% To integrate your ONNX model, follow these steps:
+%
+% 1. Uncomment and modify the loadIDSModel function:
+%    function ids_model = loadIDSModel(ids_model)
+%        try
+%            ids_model.net = importONNXNetwork('your_model_path.onnx');
+%            ids_model.model_loaded = true;
+%            fprintf('ONNX model loaded successfully\n');
+%        catch ME
+%            fprintf('Failed to load ONNX model: %s\n', ME.message);
+%            ids_model.model_loaded = false;
+%        end
+%    end
+%
+% 2. Modify the predictAttack function:
+%    function [is_attack, attack_type, confidence] = predictAttack(ids_model, features)
+%        if ids_model.model_loaded
+%            % Predict using ONNX model
+%            prediction = predict(ids_model.net, features');
+%            [confidence, idx] = max(prediction);
+%            attack_type = ids_model.attack_types{idx};
+%            is_attack = ~strcmp(attack_type, 'NORMAL');
+%        else
+%            [is_attack, attack_type, confidence] = simulateDetection(ids_model, features);
+%        end
+%    end
+
+%% Run the simulation
+fprintf('=== BLUETOOTH MESH NETWORK IDS SIMULATION ===\n');
+fprintf('This simulation demonstrates AI-assisted intrusion detection\n');
+fprintf('in a disaster-affected Bluetooth mesh network.\n\n');
+
+% Set random seed for reproducibility
+rng(42);
+
+% Run the main simulation
+runBluetoothMeshSimulation();
+
+fprintf('\nSimulation completed successfully!\n');
+fprintf('Check the simulation_results folder for detailed output files.\n');
