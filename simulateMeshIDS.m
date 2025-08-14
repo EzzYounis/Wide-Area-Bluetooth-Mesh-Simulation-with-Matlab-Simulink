@@ -43,6 +43,8 @@ function node = createNormalNode(id, x, y)
     node.attack_frequency = 0;  % 0 for normal nodes
     node.last_attack_time = 0;
     node.target_nodes = [];
+    node.message_cache = containers.Map(); % Key: message_id, Value: struct with message and timestamp
+    node.cache_duration = 20;
 end
 
 function node = createAttackerNode(id, x, y)
@@ -66,6 +68,8 @@ function node = createAttackerNode(id, x, y)
     node.attack_frequency = 30 + 30 * rand(); % 30-60 seconds between attacks
     node.last_attack_time = 0;
     node.target_nodes = [];
+    node.message_cache = containers.Map(); % Key: message_id, Value: struct with message and timestamp
+    node.cache_duration = 20;
 end
 
 function ids_model = createIDSModel()
@@ -133,6 +137,13 @@ function [node, message] = sendMessage(node, content, msg_type, destination_id, 
     message.size_bytes = length(content);
     message.is_attack = node.is_attacker && strcmp(msg_type, 'ATTACK');
     
+    cache_entry = struct();
+    cache_entry.message = message;
+    cache_entry.cache_time = current_time;
+    cache_entry.forwarded_to = []; % Track which neighbors already received it
+    
+    node.message_cache(message.id) = cache_entry;
+
     % Add to global message log
     global simulation_data;
     
@@ -155,7 +166,18 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
     if ~node.is_active || node.battery_level < 0.1
         return;
     end
-    fprintf('Message %s: From Node %d → To Node %d\n', ...
+    if nodeHasMessage(node, message.id)
+        fprintf('Node %d already has message %s, ignoring duplicate\n', node.id, message.id);
+        return;
+    end
+    cache_entry = struct();
+    cache_entry.message = message;
+    cache_entry.cache_time = current_time;
+    cache_entry.forwarded_to = []; % Will track neighbors we forward to
+    node.message_cache(message.id) = cache_entry;
+    
+    % Print message path
+    fprintf('Message %s: From Node %d → To Node %d (new)\n', ...
         message.id, message.source_id, node.id);
     
     % Store message in buffer
@@ -1123,6 +1145,56 @@ function shared_model = createSharedIDSModel()
     % Train once for all nodes
     shared_model = trainRandomForestModel(shared_model);
 end
+function node = cleanupMessageCache(node, current_time)
+    % Remove messages older than cache_duration
+    message_ids = keys(node.message_cache);
+    
+    for i = 1:length(message_ids)
+        msg_id = message_ids{i};
+        cache_entry = node.message_cache(msg_id);
+        
+        if current_time - cache_entry.cache_time > node.cache_duration
+            remove(node.message_cache, msg_id);
+            fprintf('Node %d removed cached message %s (expired)\n', node.id, msg_id);
+        end
+    end
+end
+
+function has_message = nodeHasMessage(node, message_id)
+    % Check if node already has this message in cache
+    has_message = isKey(node.message_cache, message_id);
+end
+
+function node = forwardCachedMessages(node, current_time)
+    % Check for new neighbors and forward cached messages
+    message_ids = keys(node.message_cache);
+    
+    for i = 1:length(message_ids)
+        msg_id = message_ids{i};
+        cache_entry = node.message_cache(msg_id);
+        
+        % Check if message is still valid (not expired)
+        if current_time - cache_entry.cache_time <= node.cache_duration
+            % Find neighbors who haven't received this message yet
+            for j = 1:length(node.neighbors)
+                neighbor_id = node.neighbors(j);
+                
+                % Check if we haven't forwarded to this neighbor yet
+                if ~ismember(neighbor_id, cache_entry.forwarded_to)
+                    % Forward the message
+                    fprintf('Node %d forwarding cached message %s to neighbor %d\n', ...
+                        node.id, msg_id, neighbor_id);
+                    
+                    % Add to forwarded list
+                    cache_entry.forwarded_to(end+1) = neighbor_id;
+                    node.message_cache(msg_id) = cache_entry;
+                    
+                    % Simulate forwarding (will be handled in main loop)
+                end
+            end
+        end
+    end
+end
 
 %% Main Simulation Function
 function runBluetoothMeshSimulation()
@@ -1192,25 +1264,25 @@ function runBluetoothMeshSimulation()
         
         % Generate messages every MESSAGE_INTERVAL seconds
         if current_time - last_message_time >= MESSAGE_INTERVAL
-            % Normal nodes send messages
+            
+            % NEW: Only ONE message every 15 seconds across entire network
             active_normal_indices = find(~[nodes.is_attacker] & [nodes.is_active]);
             
-            for i = 1:length(active_normal_indices)
-                idx = active_normal_indices(i);
-                if rand() < 0.7  % 70% chance to send a message
+            if ~isempty(active_normal_indices)
+                % Randomly select ONE node to send a message
+                sender_idx = active_normal_indices(randi(length(active_normal_indices)));
+                
+                % Choose message type randomly
+                if rand() < 0.8  % 80% chance for data message
                     content = generateNormalMessage();
                     destination = randi(NUM_NORMAL_NODES);
-                    if destination ~= nodes(idx).id
-                        message = sendMessage(nodes(idx), content, 'DATA', destination, current_time);
+                    if destination ~= nodes(sender_idx).id
+                        message = sendMessage(nodes(sender_idx), content, 'DATA', destination, current_time);
+                        fprintf('Network message: Node %d sent data message\n', nodes(sender_idx).id);
                     end
-                end
-            end
-            
-            % Heartbeat messages
-            for i = 1:length(active_normal_indices)
-                idx = active_normal_indices(i);
-                if rand() < 0.3  % 30% chance for heartbeat
-                    message = sendMessage(nodes(idx), 'HEARTBEAT', 'HEARTBEAT', 0, current_time);
+                else  % 20% chance for heartbeat
+                    message = sendMessage(nodes(sender_idx), 'HEARTBEAT', 'HEARTBEAT', 0, current_time);
+                    fprintf('Network message: Node %d sent heartbeat\n', nodes(sender_idx).id);
                 end
             end
             
@@ -1226,30 +1298,58 @@ function runBluetoothMeshSimulation()
             nodes(idx) = launchAttack(nodes(idx), current_time, normal_node_ids);
         end
         
-        % Message propagation simulation
-        all_messages = simulation_data.messages;
-        if ~isempty(all_messages)
-            recent_message_indices = find([all_messages.timestamp] > current_time - MESSAGE_INTERVAL);
+        % Enhanced message propagation with caching and duplicate detection
+        if mod(current_time, 5) == 0  % Check every 5 seconds
             
-            for i = 1:length(recent_message_indices)
-                msg_idx = recent_message_indices(i);
-                msg = all_messages(msg_idx);
-                
-                if msg.ttl > 0
-                    % Find source node
-                    source_node_idx = find([nodes.id] == msg.source_id);
-                    if ~isempty(source_node_idx)
-                        source_node = nodes(source_node_idx);
+            % Clean up expired messages from all nodes
+            for i = 1:length(nodes)
+                if nodes(i).is_active
+                    nodes(i) = cleanupMessageCache(nodes(i), current_time);
+                end
+            end
+            
+            % Forward cached messages to new/missed neighbors
+            for i = 1:length(nodes)
+                if nodes(i).is_active && ~isempty(keys(nodes(i).message_cache))
+                    % Check each cached message
+                    message_ids = keys(nodes(i).message_cache);
+                    
+                    for j = 1:length(message_ids)
+                        msg_id = message_ids{j};
+                        cache_entry = nodes(i).message_cache(msg_id);
                         
-                        % Simulate message reception by neighbors
-                        for j = 1:length(source_node.neighbors)
-                            neighbor_id = source_node.neighbors(j);
+                        % Skip if message expired
+                        if current_time - cache_entry.cache_time > nodes(i).cache_duration
+                            continue;
+                        end
+                        
+                        % Forward to neighbors who don't have it yet
+                        for k = 1:length(nodes(i).neighbors)
+                            neighbor_id = nodes(i).neighbors(k);
                             neighbor_idx = find([nodes.id] == neighbor_id);
                             
                             if ~isempty(neighbor_idx) && nodes(neighbor_idx).is_active
-                                % Simulate transmission delay and success probability
-                                if rand() < 0.9  % 90% successful transmission
-                                    [nodes(neighbor_idx), detection_result] = receiveMessage(nodes(neighbor_idx), msg, current_time, source_node);
+                                % Check if neighbor already has this message
+                                if ~nodeHasMessage(nodes(neighbor_idx), msg_id)
+                                    % Check if we haven't already forwarded to this neighbor
+                                    if ~ismember(neighbor_id, cache_entry.forwarded_to)
+                                        
+                                        if rand() < 0.9  % 90% transmission success
+                                            % Forward the message
+                                            forwarded_msg = cache_entry.message;
+                                            forwarded_msg.hop_count = forwarded_msg.hop_count + 1;
+                                            forwarded_msg.ttl = forwarded_msg.ttl - 1;
+                                            
+                                            [nodes(neighbor_idx), detection_result] = receiveMessage(nodes(neighbor_idx), forwarded_msg, current_time, nodes(i));
+                                            
+                                            % Mark as forwarded to this neighbor
+                                            cache_entry.forwarded_to(end+1) = neighbor_id;
+                                            nodes(i).message_cache(msg_id) = cache_entry;
+                                            
+                                            fprintf('Node %d forwarded cached message %s to Node %d\n', ...
+                                                nodes(i).id, msg_id, neighbor_id);
+                                        end
+                                    end
                                 end
                             end
                         end
@@ -1257,7 +1357,7 @@ function runBluetoothMeshSimulation()
                 end
             end
         end
-        
+                
         % Update statistics every 30 seconds
         if current_time - last_stats_time >= 30
             updateStatistics(current_time);
@@ -1312,6 +1412,7 @@ function runBluetoothMeshSimulation()
     
     % Save results
     saveSimulationResults(nodes, stats_history);
+
 end
 
 
