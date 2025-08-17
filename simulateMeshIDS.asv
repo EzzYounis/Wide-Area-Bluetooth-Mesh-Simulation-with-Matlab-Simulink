@@ -72,7 +72,14 @@ function node = createAttackerNode(id, x, y)
     node.cache_duration = 20;
 end
 
-
+function ids_model = createIDSModel()
+    ids_model = struct();
+    ids_model.model_loaded = false;
+    ids_model.attack_types = {'NORMAL', 'FLOODING', 'SPOOFING', 'INJECTION', ...
+                             'EXPLOITATION', 'MISINFORMATION', 'RESOURCE_DRAIN'};
+    ids_model.feature_weights = rand(43, 1); % Keep for fallback
+    ids_model = trainRandomForestModel(ids_model); % New function
+end
 
 function ids_model = trainRandomForestModel(ids_model)
     try
@@ -128,7 +135,8 @@ function [node, message] = sendMessage(node, content, msg_type, destination_id, 
     message.hop_count = 0;
     message.route_path = {node.id};
     message.size_bytes = length(content);
-message.is_attack = node.is_attacker; % Any message from attacker is an attack    
+    message.is_attack = node.is_attacker && strcmp(msg_type, 'ATTACK');
+    
     cache_entry = struct();
     cache_entry.message = message;
     cache_entry.cache_time = current_time;
@@ -319,110 +327,16 @@ function [rule_result] = runRuleBasedDetection(node, message, sender_node, curre
     end
 end
 
-
-function [final_result] = fuseDetectionResults(rule_result, ai_result, fusion_weights)
-    final_result = struct();
-    
-    % Determine if attack detected by either system
-    rule_attack = ~strcmp(rule_result.primary_attack, 'NORMAL') && rule_result.overall_confidence > 0.5;
-    ai_attack = ai_result.is_attack && ai_result.confidence > 0.5;
-    
-    % Fusion logic
-    if rule_attack && ai_attack
-        % Both agree - high confidence
-        final_result.is_attack = true;
-        final_result.attack_type = rule_result.primary_attack;
-        final_result.confidence = fusion_weights.rule_weight * rule_result.overall_confidence + ...
-                                 fusion_weights.ai_weight * ai_result.confidence;
-        final_result.fusion_method = 'CONSENSUS';
-        
-    elseif rule_attack && ~ai_attack
-        % Only rules detected
-        if rule_result.overall_confidence > 0.8
-            final_result.is_attack = true;
-            final_result.attack_type = rule_result.primary_attack;
-            final_result.confidence = rule_result.overall_confidence * 0.9;
-            final_result.fusion_method = 'RULE_ONLY';
-        else
-            final_result.is_attack = false;
-            final_result.attack_type = 'NORMAL';
-            final_result.confidence = 0.6;
-            final_result.fusion_method = 'RULE_WEAK';
-        end
-        
-    elseif ~rule_attack && ai_attack
-        % Only AI detected
-        if ai_result.confidence > 0.8
-            final_result.is_attack = true;
-            final_result.attack_type = ai_result.attack_type;
-            final_result.confidence = ai_result.confidence * 0.85;
-            final_result.fusion_method = 'AI_ONLY';
-        else
-            final_result.is_attack = false;
-            final_result.attack_type = 'NORMAL';
-            final_result.confidence = 0.6;
-            final_result.fusion_method = 'AI_WEAK';
-        end
-        
-    else
-        % Neither detected attack
-        final_result.is_attack = false;
-        final_result.attack_type = 'NORMAL';
-        final_result.confidence = 0.95;
-        final_result.fusion_method = 'BOTH_NORMAL';
-    end
-    
-    % Ensure confidence is in valid range
-    final_result.confidence = max(0.1, min(0.99, final_result.confidence));
-    
-    % Store component results for analysis
-    final_result.rule_detection = rule_result;
-    final_result.ai_detection = ai_result;
-end
-
 function [node, detection_result] = runIDSDetection(node, message, sender_node, current_time)
     start_time = tic;
     
     % Extract features for IDS
     features = extractMessageFeatures(node, message, sender_node, current_time);
     
-    % NEW: Run both rule-based and AI-based detection
-    if node.ids_model.hybrid_mode
-        % Rule-based detection
-        rule_start = tic;
-        rule_result = runRuleBasedDetection(node, message, sender_node, current_time, features);
-        rule_time = toc(rule_start);
-        
-        % AI-based detection
-        ai_start = tic;
-        [ai_is_attack, ai_attack_type, ai_confidence] = predictAttack(node.ids_model, features);
-        ai_time = toc(ai_start);
-        
-        ai_result = struct();
-        ai_result.is_attack = ai_is_attack;
-        ai_result.attack_type = ai_attack_type;
-        ai_result.confidence = ai_confidence;
-        
-        % Fusion of results
-        fusion_start = tic;
-        fused_result = fuseDetectionResults(rule_result, ai_result, node.ids_model.fusion_weights);
-        fusion_time = toc(fusion_start);
-        
-        % Use fused results
-        is_attack = fused_result.is_attack;
-        attack_type = fused_result.attack_type;
-        confidence = fused_result.confidence;
-        
-        % Additional timing information
-        processing_time = toc(start_time) * 1000;
-        
-        fprintf('HYBRID DETECTION: Rule=%.2fms, AI=%.2fms, Fusion=%.2fms, Method=%s\n', ...
-            rule_time*1000, ai_time*1000, fusion_time*1000, fused_result.fusion_method);
-    else
-        % Original AI-only detection
-        [is_attack, attack_type, confidence] = predictAttack(node.ids_model, features);
-        processing_time = toc(start_time) * 1000;
-    end
+    % Run IDS model
+    [is_attack, attack_type, confidence] = predictAttack(node.ids_model, features);
+    
+    processing_time = toc(start_time) * 1000; % Convert to milliseconds
     
     detection_result = struct();
     detection_result.message_id = message.id;
@@ -434,33 +348,25 @@ function [node, detection_result] = runIDSDetection(node, message, sender_node, 
     detection_result.detector_id = node.id;
     detection_result.timestamp = current_time;
     
-    % NEW: Add hybrid-specific information
-    if node.ids_model.hybrid_mode && exist('fused_result', 'var')
-        detection_result.fusion_method = fused_result.fusion_method;
-        detection_result.rule_triggered = ~isempty(rule_result.triggered_rules);
-        detection_result.triggered_rules = rule_result.triggered_rules;
-        detection_result.rule_confidence = rule_result.overall_confidence;
-        detection_result.ai_confidence = ai_result.confidence;
-    end
-    
     % Process detection result
     node = processDetectionResult(node, detection_result, message);
     
     % Add to global detection log
     global simulation_data;
     if isempty(simulation_data.detections)
-        simulation_data.detections = detection_result;
+        simulation_data.detections = detection_result;  % First detection
     else
-        simulation_data.detections(end+1) = detection_result;
+        simulation_data.detections(end+1) = detection_result;  % Subsequent detections
     end
 
     if detection_result.is_attack && detection_result.confidence > 0.7
         message.blocked = true;
         message.block_reason = detection_result.attack_type;
-        fprintf('Node %d BLOCKED message %s (reason: %s, confidence: %.2f)\n', ...
-            node.id, message.id, detection_result.attack_type, detection_result.confidence);
-        return;
+        fprintf('Node %d BLOCKED message %s (reason: %s)\n', ...
+            node.id, message.id, detection_result.attack_type);
+        return; % Don't process further
     end
+
 end
 
 function features = extractMessageFeatures(node, message, sender_node, current_time)
@@ -1307,61 +1213,6 @@ function generateComprehensiveReport(nodes, stats_history)
             fprintf('• IDS processing time is high. Consider model optimization.\n');
         end
     end
-
-    fprintf('\n=== HYBRID IDS ANALYSIS ===\n');
-    
-    % Check if we have hybrid detection data
-    if ~isempty(simulation_data.detections) && isfield(simulation_data.detections(1), 'fusion_method')
-        
-        % Analyze fusion methods used
-        fusion_methods = {simulation_data.detections.fusion_method};
-        unique_methods = unique(fusion_methods);
-        
-        fprintf('Fusion Method Distribution:\n');
-        for i = 1:length(unique_methods)
-            method_count = sum(strcmp(fusion_methods, unique_methods{i}));
-            percentage = (method_count / length(fusion_methods)) * 100;
-            fprintf('  %s: %d (%.1f%%)\n', unique_methods{i}, method_count, percentage);
-        end
-        
-        % Rule-based vs AI-based detection comparison
-        rule_detections = simulation_data.detections([simulation_data.detections.rule_triggered]);
-        ai_only_detections = simulation_data.detections(strcmp({simulation_data.detections.fusion_method}, 'AI_ONLY_HIGH_CONF'));
-        rule_only_detections = simulation_data.detections(strcmp({simulation_data.detections.fusion_method}, 'RULE_ONLY_HIGH_CONF'));
-        
-        fprintf('\nDetection Source Analysis:\n');
-        fprintf('  Rule-triggered detections: %d\n', length(rule_detections));
-        fprintf('  AI-only detections: %d\n', length(ai_only_detections));
-        fprintf('  Rule-only detections: %d\n', length(rule_only_detections));
-        
-        % Average confidence comparison
-        if ~isempty(rule_detections)
-            avg_rule_conf = mean([rule_detections.rule_confidence]);
-            avg_ai_conf = mean([rule_detections.ai_confidence]);
-            fprintf('  Average rule confidence: %.3f\n', avg_rule_conf);
-            fprintf('  Average AI confidence: %.3f\n', avg_ai_conf);
-        end
-        
-        % Rule trigger analysis
-        all_triggered_rules = {};
-        for i = 1:length(simulation_data.detections)
-            if isfield(simulation_data.detections(i), 'triggered_rules')
-                all_triggered_rules = [all_triggered_rules, simulation_data.detections(i).triggered_rules];
-            end
-        end
-        
-        if ~isempty(all_triggered_rules)
-            unique_rules = unique(all_triggered_rules);
-            fprintf('\nMost Triggered Rules:\n');
-            for i = 1:length(unique_rules)
-                rule_count = sum(strcmp(all_triggered_rules, unique_rules{i}));
-                fprintf('  %s: %d times\n', unique_rules{i}, rule_count);
-            end
-        end
-        
-    else
-        fprintf('No hybrid detection data available.\n');
-    end
     
     fprintf('\n################################################################\n');
     fprintf('#                     END OF REPORT                           #\n');
@@ -1424,14 +1275,6 @@ function shared_model = createSharedIDSModel()
     shared_model.model_loaded = false;
     shared_model.attack_types = {'NORMAL', 'FLOODING', 'SPOOFING', 'INJECTION', ...
                                 'EXPLOITATION', 'MISINFORMATION', 'RESOURCE_DRAIN'};
-    
-    % ADD THESE MISSING FIELDS:
-    shared_model.feature_weights = rand(43, 1);
-    shared_model.rules = createDetectionRules();
-    shared_model.hybrid_mode = true;
-    shared_model.rule_confidence_threshold = 0.8;
-    shared_model.ai_confidence_threshold = 0.6;
-    shared_model.fusion_weights = struct('rule_weight', 0.6, 'ai_weight', 0.4);
     
     % Train once for all nodes
     shared_model = trainRandomForestModel(shared_model);
@@ -1688,8 +1531,6 @@ function runBluetoothMeshSimulation()
         pause(0.01); % Small delay for visualization
     end
     
-   
-
     fprintf('\nSimulation completed!\n');
     
     % Final statistics update
