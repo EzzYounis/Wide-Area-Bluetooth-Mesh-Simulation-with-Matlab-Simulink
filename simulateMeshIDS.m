@@ -235,6 +235,7 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
     % If not attacker, run IDS detection
     if ~node.is_attacker
         [node, detection_result] = runIDSDetection(node, message, sender_node, current_time);
+        logMessageDetails(message, detection_result, node, current_time);
     end
     
     % Consume battery
@@ -1804,10 +1805,115 @@ function node = forwardCachedMessages(node, current_time)
     end
 end
 
+function logMessageDetails(message, detection_result, node, current_time)
+    global message_log;
+    
+    % Initialize log if it doesn't exist
+    if ~exist('message_log', 'var') || isempty(message_log)
+        message_log = struct([]);
+    end
+    
+    % Create detailed log entry
+    log_entry = struct();
+    
+    % Basic message information
+    log_entry.message_id = message.id;
+    log_entry.timestamp = current_time;
+    log_entry.source_id = message.source_id;
+    log_entry.destination_id = message.destination_id;
+    log_entry.message_type = message.type;
+    log_entry.content = message.content;
+    log_entry.content_length = length(message.content);
+    log_entry.hop_count = message.hop_count;
+    log_entry.ttl = message.ttl;
+    log_entry.is_attack = message.is_attack;
+    
+    % Content analysis
+    log_entry.entropy_score = calculateEntropy(message.content);
+    log_entry.special_char_ratio = calculateSpecialCharRatio(message.content);
+    log_entry.numeric_ratio = calculateNumericRatio(message.content);
+    log_entry.emergency_keywords = countEmergencyKeywords(message.content);
+    log_entry.suspicious_urls = countSuspiciousURLs(message.content);
+    log_entry.command_patterns = countCommandPatterns(message.content);
+    
+    % Network context
+    log_entry.detector_id = node.id;
+    log_entry.detector_battery = node.battery_level;
+    log_entry.detector_neighbors = length(node.neighbors);
+    
+    % Detection results
+    if ~isempty(detection_result)
+        log_entry.detected_as_attack = detection_result.is_attack;
+        log_entry.detected_attack_type = detection_result.attack_type;
+        log_entry.detection_confidence = detection_result.confidence;
+        log_entry.threat_level = detection_result.threat_level;
+        log_entry.processing_time_ms = detection_result.processing_time_ms;
+        
+        % Hybrid detection specific
+        if isfield(detection_result, 'fusion_method')
+            log_entry.fusion_method = detection_result.fusion_method;
+            log_entry.rule_triggered = detection_result.rule_triggered;
+            log_entry.rule_confidence = detection_result.rule_confidence;
+            log_entry.ai_confidence = detection_result.ai_confidence;
+        end
+    else
+        log_entry.detected_as_attack = false;
+        log_entry.detected_attack_type = 'NONE';
+        log_entry.detection_confidence = 0;
+        log_entry.threat_level = 0;
+        log_entry.processing_time_ms = 0;
+    end
+    
+    % Performance metrics
+    log_entry.true_positive = log_entry.is_attack && log_entry.detected_as_attack;
+    log_entry.true_negative = ~log_entry.is_attack && ~log_entry.detected_as_attack;
+    log_entry.false_positive = ~log_entry.is_attack && log_entry.detected_as_attack;
+    log_entry.false_negative = log_entry.is_attack && ~log_entry.detected_as_attack;
+    
+    % Add to log
+    if isempty(message_log)
+        message_log = log_entry;
+    else
+        message_log(end+1) = log_entry;
+    end
+end
+
+
+function exportTrainingDataset()
+    global message_log simulation_data;
+    
+    if isempty(message_log)
+        fprintf('No message log data available for export.\n');
+        return;
+    end
+    
+    fprintf('Exporting comprehensive training dataset...\n');
+    
+    % Create results directory
+    results_dir = 'training_data';
+    if ~exist(results_dir, 'dir')
+        mkdir(results_dir);
+    end
+    
+    timestamp = datestr(now, 'yyyymmdd_HHMMSS');
+    
+    % Export detailed message log
+    message_table = struct2table(message_log);
+    csv_filename = fullfile(results_dir, sprintf('message_dataset_%s.csv', timestamp));
+    writetable(message_table, csv_filename);
+    fprintf('Message dataset exported to: %s\n', csv_filename);
+    
+    % Save as MAT file for MATLAB
+    mat_filename = fullfile(results_dir, sprintf('message_log_%s.mat', timestamp));
+    save(mat_filename, 'message_log');
+    fprintf('Message log saved to: %s\n', mat_filename);
+end
+
 %% Main Simulation Function
 function runBluetoothMeshSimulation()
     global simulation_data;
     global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE ;
+    message_log = struct([]);
 
     fprintf('Starting Bluetooth Mesh Network IDS Simulation...\n');
     fprintf('Network Configuration:\n');
@@ -2004,13 +2110,8 @@ function runBluetoothMeshSimulation()
         pause(0.01); % Small delay for visualization
     end
     
-    log_entry.disaster_context = assessDisasterContext(message, current_time);
-    log_entry.emergency_priority_level = getEmergencyPriority(message);
-    log_entry.contains_evacuation_info = contains(lower(message.content), 'evacuat');
-    log_entry.contains_rescue_info = contains(lower(message.content), 'rescue');
-    log_entry.contains_medical_info = contains(lower(message.content), 'medical');
-    log_entry.authority_impersonation_risk = assessAuthorityImpersonationRisk(message);
-    log_entry.panic_inducing_content = assessPanicContent(message);
+    fprintf('\nExporting training dataset...\n');
+    exportTrainingDataset();
 
     fprintf('\nSimulation completed!\n');
     
