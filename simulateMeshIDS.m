@@ -25,28 +25,6 @@ simulation_data.statistics = struct();
 simulation_data.current_time = 0;
 
 %% Node Creation Functions
-function node = createNormalNode(id, x, y)
-    node = struct();
-    node.id = id;
-    node.position = [x, y];
-    node.is_attacker = false;
-    node.battery_level = 0.8 + 0.2 * rand(); % 80-100%
-    node.processing_power = 0.7 + 0.3 * rand(); % 70-100%
-    node.neighbors = [];
-    node.message_buffer = {};
-    node.routing_table = containers.Map();
-    node.reputation_scores = containers.Map();
-    node.message_history = {};
-    node.detection_stats = struct('tp', 0, 'fp', 0, 'tn', 0, 'fn', 0);
-    node.is_active = true;
-    node.attack_strategy = '';  % Empty for normal nodes
-    node.attack_frequency = 0;  % 0 for normal nodes
-    node.last_attack_time = 0;
-    node.target_nodes = [];
-    node.message_cache = containers.Map(); % Key: message_id, Value: struct with message and timestamp
-    node.cache_duration = 20;
-end
-
 function node = createAttackerNode(id, x, y)
     node = struct();
     node.id = id;
@@ -68,10 +46,88 @@ function node = createAttackerNode(id, x, y)
     node.attack_frequency = 30 + 30 * rand(); % 30-60 seconds between attacks
     node.last_attack_time = 0;
     node.target_nodes = [];
-    node.message_cache = containers.Map(); % Key: message_id, Value: struct with message and timestamp
+    node.message_cache = containers.Map();
     node.cache_duration = 20;
+    node.attack_params = struct(); % Will be populated by advanced attacker function
 end
 
+function node = createNormalNode(id, x, y)
+    node = struct();
+    node.id = id;
+    node.position = [x, y];
+    node.is_attacker = false;
+    node.battery_level = 0.8 + 0.2 * rand(); % 80-100%
+    node.processing_power = 0.7 + 0.3 * rand(); % 70-100%
+    node.neighbors = [];
+    node.message_buffer = {};
+    node.routing_table = containers.Map();
+    node.reputation_scores = containers.Map();
+    node.message_history = {};
+    node.detection_stats = struct('tp', 0, 'fp', 0, 'tn', 0, 'fn', 0);
+    node.is_active = true;
+    
+    % Add these missing fields for consistency:
+    node.attack_strategy = '';  % Empty for normal nodes
+    node.attack_frequency = 0;  % 0 for normal nodes
+    node.last_attack_time = 0;
+    node.target_nodes = [];
+    node.message_cache = containers.Map();
+    node.cache_duration = 20;
+    node.attack_params = struct(); % Empty struct for normal nodes
+end
+
+function node = createAdvancedAttackerNode(id, x, y)
+    node = createAttackerNode(id, x, y); % Use base function
+    
+    % Enhanced attack strategies with specific parameters
+    advanced_strategies = {
+        'ADAPTIVE_FLOODING', 'SOCIAL_ENGINEERING', 'PROTOCOL_MANIPULATION', 
+        'RESOURCE_EXHAUSTION', 'MISINFORMATION_CAMPAIGN', 'TIMING_ATTACK'
+    };
+    
+    node.attack_strategy = advanced_strategies{randi(length(advanced_strategies))};
+    node.attack_params = struct();
+    % Strategy-specific parameters
+    switch node.attack_strategy
+        case 'ADAPTIVE_FLOODING'
+            node.attack_params.flood_pattern = randi([1, 4]);
+            node.attack_params.message_burst_size = 5 + randi(10);
+            node.attack_params.burst_interval = 20 + randi(40);
+            
+        case 'SOCIAL_ENGINEERING'
+            node.attack_params.target_persona = randi([1, 3]);
+            node.attack_params.urgency_level = 0.7 + 0.3 * rand();
+            node.attack_params.credential_spoofing = true;
+            
+        case 'PROTOCOL_MANIPULATION'
+            node.attack_params.ttl_manipulation = true;
+            node.attack_params.header_spoofing = true;
+            node.attack_params.routing_attack = true;
+            
+        case 'RESOURCE_EXHAUSTION'
+            node.attack_params.target_resource = randi([1, 3]); % Battery, Processing, Memory
+            node.attack_params.exhaustion_rate = 0.1 + 0.2 * rand(); % 0.1-0.3 depletion rate
+            
+        case 'MISINFORMATION_CAMPAIGN'
+            node.attack_params.disinformation_type = randi([1, 4]); % False alarms, Wrong locations, etc.
+            node.attack_params.credibility_mimicking = true;
+            
+        case 'TIMING_ATTACK'
+            node.attack_params.peak_hour_targeting = true;
+            node.attack_params.response_delay_injection = true;
+    end
+    
+    % Dynamic attack frequency based on strategy
+    base_frequency = 30;
+    switch node.attack_strategy
+        case 'ADAPTIVE_FLOODING'
+            node.attack_frequency = base_frequency * 0.3; % More frequent
+        case 'TIMING_ATTACK'
+            node.attack_frequency = base_frequency * 2; % Less frequent but targeted
+        otherwise
+            node.attack_frequency = base_frequency + randi(30);
+    end
+end
 
 
 function ids_model = trainRandomForestModel(ids_model)
@@ -598,8 +654,10 @@ function ratio = calculateNumericRatio(text)
 end
 
 function count = countEmergencyKeywords(text)
-    emergency_keywords = {'emergency', 'help', 'rescue', 'medical', 'fire', 'disaster', ...
-                         'ambulance', 'hospital', 'injured', 'trapped', 'evacuation'};
+    emergency_keywords = {'emergency', 'help', 'rescue', 'urgent', 'sos', 'trapped', ...
+                         'injured', 'medical', 'fire', 'flood', 'evacuate', 'shelter', ...
+                         'missing', 'found', 'safe', 'danger', 'critical', 'alert', ...
+                         'breaking', 'immediate', 'disaster', 'crisis', 'victim', 'survivor'};
     text_lower = lower(text);
     count = 0;
     for i = 1:length(emergency_keywords)
@@ -885,7 +943,7 @@ function node = launchAttack(node, current_time, target_nodes)
     end
     
     % Generate attack message based on strategy
-    attack_content = generateAttackContent(node);
+    attack_content = generateAdvancedAttackContent(node);
     
     fprintf('ATTACKER Node %d launching %s attack at time %.2f\n', ...
         node.id, node.attack_strategy, current_time);
@@ -894,53 +952,312 @@ function node = launchAttack(node, current_time, target_nodes)
     message = sendMessage(node, attack_content, 'DATA', target_id, current_time);
 end
 
-function content = generateAttackContent(node)
+function content = generateAdvancedAttackContent(node)
+    if ~node.is_attacker || isempty(node.attack_strategy)
+        content = generateNormalMessage();
+        return;
+    end
+    
     switch node.attack_strategy
-        case 'FLOODING'
-            content = ['FLOOD_ATTACK_', repmat('A', 1, 500), '_END'];
+        case 'ADAPTIVE_FLOODING'
+            content = generateAdaptiveFloodingContent(node);
             
-        case 'SPOOFING'
-            spoofing_messages = {
-                'URGENT: Emergency services account suspended! Verify at http://fake-emergency.com now!',
-                'FEMA Alert: Click http://disaster-relief.fake to claim emergency supplies',
-                'Police Notice: Evacuation mandatory. Confirm identity at http://emergency-verify.fake'
-            };
-            content = spoofing_messages{randi(length(spoofing_messages))};
+        case 'SOCIAL_ENGINEERING'
+            content = generateSocialEngineeringContent(node);
             
-        case 'INJECTION'
-            injection_payloads = {
-                'Emergency update: {"command": "DELETE FROM victims WHERE location=*"}',
-                'System alert: ; rm -rf /emergency/database; echo "hacked"',
-                'Alert<script>alert("XSS Attack")</script>evacuation needed'
-            };
-            content = injection_payloads{randi(length(injection_payloads))};
+        case 'PROTOCOL_MANIPULATION'
+            content = generateProtocolManipulationContent(node);
             
-        case 'RESOURCE_DRAIN'
-            content = [repmat('X', 1, 1000), ' - Emergency broadcast system overload test'];
+        case 'RESOURCE_EXHAUSTION'
+            content = generateResourceExhaustionContent(node);
+            
+        case 'MISINFORMATION_CAMPAIGN'
+            content = generateMisinformationContent(node);
+            
+        case 'TIMING_ATTACK'
+            content = generateTimingAttackContent(node);
             
         otherwise
-            content = 'Generic attack message with suspicious content';
+            content = generateAttackContent(node); % Fallback to original
     end
 end
 
-%% Message Generation Functions
-function content = generateNormalMessage()
-    normal_messages = {
-        'Emergency: Medical assistance needed at building 5, floor 3',
-        'Status update: Rescue team deployed to sector Alpha',
-        'Resource request: Need water supplies at evacuation point',
-        'Location update: Safe passage established through route 7',
-        'Personnel check: All team members accounted for',
-        'Medical update: 3 injured civilians transported to field hospital',
-        'Communication test: Network connectivity verified',
-        'Supply status: Food distribution at checkpoint Charlie',
-        'Weather alert: Storm approaching from southeast',
-        'Evacuation notice: Clear area around damaged structure'
+
+function content = generateProtocolManipulationContent(node)
+    manipulations = {
+        'ROUTING_POISON: {"next_hop": "attacker_node", "metric": 0, "poison": true}',
+        'TTL_ATTACK: Setting TTL to maximum value for infinite propagation loop',
+        'HEADER_SPOOF: {"source": "admin_node", "auth_token": "fake_credentials"}',
+        'SEQUENCE_ATTACK: Injecting out-of-order packets to disrupt flow control',
+        'PROTOCOL_DOWNGRADE: Forcing insecure communication protocols'
     };
     
-    content = normal_messages{randi(length(normal_messages))};
+    base_content = manipulations{randi(length(manipulations))};
+    
+    % Add legitimate-looking wrapper
+    wrappers = {
+        'Network maintenance: %s',
+        'System update required: %s', 
+        'Security patch: %s',
+        'Protocol upgrade: %s'
+    };
+    wrapper = wrappers{randi(length(wrappers))};
+    content = sprintf(wrapper, base_content);
 end
 
+
+function content = generateTimingAttackContent(node)
+     timing_attacks = {
+        'DELAY_INJECTION: Introducing 5-second processing delays in all subsequent messages',
+        'SYNC_DISRUPTION: Forcing clock synchronization errors across network nodes',
+        'PEAK_OVERLOAD: Maximizing message transmission during high-traffic periods',
+        'RESPONSE_DELAY: {"command": "sleep(10)", "target": "all_emergency_responses"}',
+        'TIMEOUT_EXPLOIT: Extending message timeouts to create network congestion'
+    };
+    
+    base_attack = timing_attacks{randi(length(timing_attacks))};
+    
+    % Disguise as legitimate timing coordination
+    disguises = {
+        'TIME_SYNC: %s',
+        'COORDINATION_UPDATE: %s',
+        'SCHEDULING_ALERT: %s',
+        'TIMING_CRITICAL: %s'
+    };
+    disguise = disguises{randi(length(disguises))};
+    content = sprintf(disguise, base_attack);
+end
+
+
+function content = generateSocialEngineeringContent(node)
+   if isfield(node.attack_params, 'target_persona')
+        persona = node.attack_params.target_persona;
+    else
+        persona = randi([1, 3]); % Default random persona
+    end
+    
+    switch persona
+        case 1 % Fake emergency authority
+            authorities = {'Emergency Manager', 'Police Chief', 'Fire Captain', 'Red Cross Coordinator'};
+            authority = authorities{randi(length(authorities))};
+            commands = {
+                'EVACUATION ORDER: All residents must evacuate immediately to fake-shelter.com location',
+                'EMERGENCY: Send your location and personal details for rescue coordination',
+                'URGENT: Government aid requires your SSN and bank details for disaster relief',
+                'OFFICIAL: New evacuation route, follow link: http://fake-emergency-route.net'
+            };
+            command = commands{randi(length(commands))};
+            content = sprintf('[%s OFFICIAL]: %s - Code: %d', authority, command, randi(9999));
+            
+        case 2 % Fake family member in distress
+            family_scams = {
+                'This is your son! Phone damaged, trapped and need money for rescue!',
+                'Mom its me! Injured and need you to send cash to this address immediately!',
+                'Dad help! Lost wallet in flood, need money wired to help strangers who saved me',
+                'Sister emergency! In hospital but they need payment upfront, send money now!'
+            };
+            content = family_scams{randi(length(family_scams))};
+            
+        case 3 % Charity/donation scam
+            charity_scams = {
+                'DISASTER RELIEF: Donate now to help victims! Quick donate: http://fake-charity.net',
+                'URGENT AID: Children need food and shelter! Send money: http://scam-donation.org',
+                'EMERGENCY FUND: Help rebuild our community! Donate via: http://fake-relief.com',
+                'VICTIM SUPPORT: Families lost everything! Contribute: http://fraud-aid.net'
+            };
+            content = charity_scams{randi(length(charity_scams))};
+    end
+end
+
+function content = generateMisinformationContent(node)
+    % Check if attack_params exists and has disinformation_type
+    if isfield(node.attack_params, 'disinformation_type')
+        dis_type = node.attack_params.disinformation_type;
+    else
+        dis_type = randi([1, 4]); % Default random type
+    end
+    
+    switch dis_type
+        case 1 % False evacuation orders
+            false_orders = {
+                'FAKE ALERT: Evacuation cancelled, return to your homes immediately!',
+                'FALSE ORDER: New evacuation to dangerous zone - avoid City Hall area!',
+                'BOGUS NOTICE: Shelters are full, stay in your homes instead!',
+                'WRONG INFO: Safe zone compromised, evacuate to remote forest area!'
+            };
+            content = false_orders{randi(length(false_orders))};
+            
+        case 2 % Panic-inducing false information
+            panic_messages = {
+                'BREAKING: Second disaster incoming in 1 hour - run for your lives!',
+                'URGENT: Disease outbreak at all shelters - avoid rescue centers!',
+                'CRITICAL: Nuclear plant meltdown confirmed - radiation spreading!',
+                'EMERGENCY: Dams failing across region - massive flooding in 30 minutes!'
+            };
+            content = panic_messages{randi(length(panic_messages))};
+            
+        case 3 % False safety information
+            false_safety = {
+                'ALL CLEAR: Disaster over, emergency services no longer needed',
+                'SAFE ZONE: Downtown area is now completely safe to return',
+                'NO DANGER: Flooding has stopped, all roads are now passable',
+                'SITUATION NORMAL: Power restored everywhere, life back to normal'
+            };
+            content = false_safety{randi(length(false_safety))};
+            
+        case 4 % Resource hoarding encouragement
+            hoarding_messages = {
+                'INSIDER TIP: No aid coming, hoard all food and water you can find!',
+                'SECRET: Government keeping supplies for themselves, take everything!',
+                'WARNING: Aid trucks being robbed, grab supplies before others do!',
+                'URGENT: Supplies running out permanently, stockpile everything now!'
+            };
+            content = hoarding_messages{randi(length(hoarding_messages))};
+    end
+end
+
+function content = generateAdaptiveFloodingContent(node)
+    if isfield(node.attack_params, 'flood_pattern')
+        pattern = node.attack_params.flood_pattern;
+    else
+        pattern = randi([1, 4]); % Default random pattern
+    end
+    
+    switch pattern
+        case 1 % False emergency flooding
+            base_msg = 'EMERGENCY ALERT: ';
+            fake_emergency = 'IMMEDIATE EVACUATION REQUIRED';
+            padding = repmat('!!! URGENT !!! ', 1, 20 + randi(30));
+            content = [base_msg, fake_emergency, ' ', padding];
+            
+        case 2 % Panic message flooding
+            panic_msg = 'EVERYONE IS GOING TO DIE! RUN! SAVE YOURSELVES! ';
+            content = repmat(panic_msg, 1, 10 + randi(15));
+            
+        case 3 % Resource competition flooding
+            competition_msg = 'SUPPLIES AT WALMART! FIRST COME FIRST SERVE! RUN NOW! ';
+            content = repmat(competition_msg, 1, 8 + randi(12));
+            
+        case 4 % Communication jamming
+            jam_msg = 'SYSTEM ERROR SYSTEM ERROR NETWORK COMPROMISED ';
+            content = repmat(jam_msg, 1, 15 + randi(25));
+    end
+end
+
+function content = generateResourceExhaustionContent(node)
+     % Check if attack_params exists and has target_resource
+    if isfield(node.attack_params, 'target_resource')
+        target = node.attack_params.target_resource;
+    else
+        target = randi([1, 3]); % Default random target
+    end
+    
+    switch target
+        case 1 % Battery drain during critical time
+            content = [repmat('BATTERY_DRAIN_ATTACK_', 1, 100), ...
+                      'FORCING_HIGH_POWER_CONSUMPTION_', ...
+                      repmat('EMERGENCY_POWER_KILL_', 1, 50)];
+                      
+        case 2 % Network congestion during emergencies
+            complex_data = '';
+            for i = 1:200
+                complex_data = [complex_data, sprintf('NETWORK_SPAM_%d_', i)];
+            end
+            content = ['NETWORK_OVERLOAD_ATTACK: ', complex_data];
+            
+        case 3 % Memory exhaustion when storage needed for emergency info
+            memory_bomb = repmat('MEMORY_ATTACK_BLOCK_', 1, 150);
+            content = ['STORAGE_KILLER: ', memory_bomb, 'DELETE_EMERGENCY_MESSAGES'];
+    end
+end
+
+
+function content = generateNormalMessage()
+    % Emergency chat messages during disaster scenarios
+    message_categories = struct();
+    
+    % Emergency Coordination (High Priority/Frequency)
+    message_categories.emergency_coordination = {
+        'Family group: Everyone check in! Are you all safe?',
+        'Dad: I''m okay, stuck at office building but safe',
+        'Mom: Kids and I are at community center shelter',
+        'Sarah: Can''t reach grandma, anyone near Elm Street?',
+        'Mike: Roads flooded on Highway 9, find alternate route',
+        'Emergency: Medical help needed at Johnson house!',
+        'URGENT: Missing person - has anyone seen little Tommy?',
+        'Group: Water rising fast, evacuate NOW if you''re in Zone 3',
+        'Alert: Power lines down on Main St, stay away!',
+        'SOS: Trapped in basement, water coming in, send help!'
+    };
+    
+    % Safety Status Updates (High Frequency)
+    message_categories.safety_status = {
+        'Status: I''m safe at the school gym shelter',
+        'Update: Made it to higher ground, phone battery at 30%',
+        'Safe: Reached evacuation center, looking for family',
+        'OK: House damaged but we''re all uninjured',
+        'Checking in: Staying with neighbors, have food and water',
+        'Location: At Red Cross station, getting medical help',
+        'Status update: Car stuck but walking to safety',
+        'All good: Found shelter in community building',
+        'Safe zone: Made it to the hill, can see flooding below',
+        'Secure: In emergency bunker with 20 other people'
+    };
+    
+    % Resource Requests (Medium Frequency)
+    message_categories.resource_requests = {
+        'Need: Running out of water, any nearby distribution points?',
+        'Help: Baby formula needed urgently at women''s shelter',
+        'Request: Medication for diabetes, pharmacy closed',
+        'Food: Anyone have extra supplies for elderly neighbors?',
+        'Transport: Need ride to hospital, roads blocked',
+        'Shelter: Our house collapsed, where can family of 4 stay?',
+        'Generator: Power out for 2 days, need to charge phones',
+        'Medical: First aid supplies needed at apartment complex',
+        'Fuel: Car almost empty, any gas stations open?',
+        'Information: Which roads are still passable?'
+    };
+    
+    % Rescue Coordination (Medium Frequency)
+    message_categories.rescue_coordination = {
+        'Rescue: Boat available to help evacuate people',
+        'Volunteer: Doctor here, can provide medical assistance',
+        'Help offered: Have chainsaw, can clear fallen trees',
+        'Transport: Van with space for 8 people to evacuation center',
+        'Supplies: Distributing water bottles at park entrance',
+        'Communication: Setting up charging station for phones',
+        'Search: Organizing search party for missing residents',
+        'Coordination: Meeting at fire station to plan rescue ops',
+        'Skills: Electrician available for emergency repairs',
+        'Equipment: Have rope and tools for rescue operations'
+    };
+    
+    % Information Sharing (Low Frequency)
+    message_categories.information_sharing = {
+        'Info: Evacuation buses running every 30 minutes',
+        'Update: Airport closed, all flights cancelled',
+        'News: Emergency shelters now open at all schools',
+        'Weather: Storm expected to pass by midnight',
+        'Roads: Bridge on Sunset Ave is still safe to cross',
+        'Services: Hospital emergency room still operational',
+        'Warning: Avoid downtown area, buildings unstable',
+        'Notice: Curfew in effect from 8pm to 6am',
+        'Alert: Boil water advisory for entire district',
+        'Broadcast: Government aid arriving tomorrow morning'
+    };
+    
+    % Select category based on disaster communication patterns
+    categories = fieldnames(message_categories);
+    category_weights = [0.30, 0.25, 0.20, 0.15, 0.10]; % Emergency coordination most frequent
+    
+    rand_val = rand();
+    cumsum_weights = cumsum(category_weights);
+    category_idx = find(rand_val <= cumsum_weights, 1);
+    selected_category = categories{category_idx};
+    
+    messages = message_categories.(selected_category);
+    content = messages{randi(length(messages))};
+end
 function message_id = generateMessageID()
     persistent counter;
     if isempty(counter)
@@ -1519,9 +1836,8 @@ function runBluetoothMeshSimulation()
     for i = 1:NUM_ATTACK_NODES
         x = rand() * AREA_SIZE;
         y = rand() * AREA_SIZE;
-        attacker = createAttackerNode(NUM_NORMAL_NODES + i, x, y);
-        attacker.ids_model = shared_ids_model;  % ← SAME model for all
-
+        attacker = createAdvancedAttackerNode(NUM_NORMAL_NODES + i, x, y);
+        attacker.ids_model = shared_ids_model;  
         nodes = [nodes, attacker];
     end
     
@@ -1565,7 +1881,7 @@ function runBluetoothMeshSimulation()
                 
                 % Choose message type randomly
                 if rand() < 0.8  % 80% chance for data message
-                    content = generateNormalMessage();
+                    content = generateAdvancedAttackContent(node);
                     destination = randi(NUM_NORMAL_NODES);
                     if destination ~= nodes(sender_idx).id
                         message = sendMessage(nodes(sender_idx), content, 'DATA', destination, current_time);
@@ -1688,7 +2004,13 @@ function runBluetoothMeshSimulation()
         pause(0.01); % Small delay for visualization
     end
     
-   
+    log_entry.disaster_context = assessDisasterContext(message, current_time);
+    log_entry.emergency_priority_level = getEmergencyPriority(message);
+    log_entry.contains_evacuation_info = contains(lower(message.content), 'evacuat');
+    log_entry.contains_rescue_info = contains(lower(message.content), 'rescue');
+    log_entry.contains_medical_info = contains(lower(message.content), 'medical');
+    log_entry.authority_impersonation_risk = assessAuthorityImpersonationRisk(message);
+    log_entry.panic_inducing_content = assessPanicContent(message);
 
     fprintf('\nSimulation completed!\n');
     
@@ -1722,4 +2044,4 @@ rng(42);
 runBluetoothMeshSimulation();
 
 fprintf('\nSimulation completed successfully!\n');
-fprintf('Check the simulation_results folder for detailed output files.\n');
+fprintf('Check the simulation_results folder for detailed output files.\n');f
