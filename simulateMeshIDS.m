@@ -65,7 +65,6 @@ function node = createNormalNode(id, x, y)
     node.message_history = {};
     node.detection_stats = struct('tp', 0, 'fp', 0, 'tn', 0, 'fn', 0);
     node.is_active = true;
-    
     % Add these missing fields for consistency:
     node.attack_strategy = '';  % Empty for normal nodes
     node.attack_frequency = 0;  % 0 for normal nodes
@@ -1908,17 +1907,37 @@ function runBluetoothMeshSimulation()
     fprintf('Network initialized with %d nodes.\n', length(nodes));
     fprintf('Average neighbors per node: %.2f\n\n', mean(neighbor_counts));
     
+
     % Simulation variables
     current_time = 0;
     last_message_time = 0;
     last_stats_time = 0;
-    stats_history = struct([]); 
-    
+    stats_history = struct([]);
+    % Mobility variables
+    next_mobility_time = randi([30,90]); % First random mobility event in 30-90 seconds
+
     fprintf('Starting simulation...\n\n');
-    
+
     % Main simulation loop
     while current_time < SIMULATION_TIME
         simulation_data.current_time = current_time;
+
+        % Random node mobility event
+        if current_time >= next_mobility_time
+            movable_indices = find([nodes.is_active]);
+            if ~isempty(movable_indices)
+                move_idx = movable_indices(randi(length(movable_indices)));
+                % Move to a new random position within area
+                nodes(move_idx).position = [AREA_SIZE*rand(), AREA_SIZE*rand()];
+                % Update neighbors for this node and all others
+                for j = 1:length(nodes)
+                    nodes(j) = updateNeighbors(nodes(j), nodes, TRANSMISSION_RANGE);
+                end
+                fprintf('Node %d moved to new position at time %.1f\n', nodes(move_idx).id, current_time);
+            end
+            % Schedule next mobility event
+            next_mobility_time = current_time + randi([30,90]);
+        end
         
         % Update network topology (simulate node mobility - optional)
         if mod(current_time, 60) == 0  % Update every minute
