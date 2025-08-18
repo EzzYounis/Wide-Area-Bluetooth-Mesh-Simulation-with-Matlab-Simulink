@@ -81,8 +81,7 @@ function node = createAdvancedAttackerNode(id, x, y)
     
     % Enhanced attack strategies with specific parameters
     advanced_strategies = {
-        'ADAPTIVE_FLOODING', 'SOCIAL_ENGINEERING', 'PROTOCOL_MANIPULATION', 
-        'RESOURCE_EXHAUSTION', 'MISINFORMATION_CAMPAIGN', 'TIMING_ATTACK'
+        'ADAPTIVE_FLOODING', 'RESOURCE_EXHAUSTION', 'MISINFORMATION_CAMPAIGN', 'TIMING_ATTACK'
     };
     
     node.attack_strategy = advanced_strategies{randi(length(advanced_strategies))};
@@ -129,6 +128,25 @@ function node = createAdvancedAttackerNode(id, x, y)
     end
 end
 
+
+function [x, y] = getGridPosition(node_index, total_nodes, area_size, transmission_range)
+    % Calculate grid dimensions
+    grid_size = ceil(sqrt(total_nodes));
+    spacing = min(area_size / grid_size, transmission_range * 0.8); % 80% of transmission range
+    
+    % Add some padding from edges
+    padding = spacing * 0.2;
+    
+    row = floor((node_index - 1) / grid_size);
+    col = mod(node_index - 1, grid_size);
+    
+    x = padding + col * spacing + rand() * spacing * 0.3; % Add 30% randomness
+    y = padding + row * spacing + rand() * spacing * 0.3;
+    
+    % Ensure within bounds
+    x = min(max(x, 0), area_size);
+    y = min(max(y, 0), area_size);
+end
 
 function ids_model = trainRandomForestModel(ids_model)
     try
@@ -962,13 +980,7 @@ function content = generateAdvancedAttackContent(node)
     switch node.attack_strategy
         case 'ADAPTIVE_FLOODING'
             content = generateAdaptiveFloodingContent(node);
-            
-        case 'SOCIAL_ENGINEERING'
-            content = generateSocialEngineeringContent(node);
-            
-        case 'PROTOCOL_MANIPULATION'
-            content = generateProtocolManipulationContent(node);
-            
+       
         case 'RESOURCE_EXHAUSTION'
             content = generateResourceExhaustionContent(node);
             
@@ -984,27 +996,7 @@ function content = generateAdvancedAttackContent(node)
 end
 
 
-function content = generateProtocolManipulationContent(node)
-    manipulations = {
-        'ROUTING_POISON: {"next_hop": "attacker_node", "metric": 0, "poison": true}',
-        'TTL_ATTACK: Setting TTL to maximum value for infinite propagation loop',
-        'HEADER_SPOOF: {"source": "admin_node", "auth_token": "fake_credentials"}',
-        'SEQUENCE_ATTACK: Injecting out-of-order packets to disrupt flow control',
-        'PROTOCOL_DOWNGRADE: Forcing insecure communication protocols'
-    };
-    
-    base_content = manipulations{randi(length(manipulations))};
-    
-    % Add legitimate-looking wrapper
-    wrappers = {
-        'Network maintenance: %s',
-        'System update required: %s', 
-        'Security patch: %s',
-        'Protocol upgrade: %s'
-    };
-    wrapper = wrappers{randi(length(wrappers))};
-    content = sprintf(wrapper, base_content);
-end
+
 
 
 function content = generateTimingAttackContent(node)
@@ -1030,45 +1022,6 @@ function content = generateTimingAttackContent(node)
 end
 
 
-function content = generateSocialEngineeringContent(node)
-   if isfield(node.attack_params, 'target_persona')
-        persona = node.attack_params.target_persona;
-    else
-        persona = randi([1, 3]); % Default random persona
-    end
-    
-    switch persona
-        case 1 % Fake emergency authority
-            authorities = {'Emergency Manager', 'Police Chief', 'Fire Captain', 'Red Cross Coordinator'};
-            authority = authorities{randi(length(authorities))};
-            commands = {
-                'EVACUATION ORDER: All residents must evacuate immediately to fake-shelter.com location',
-                'EMERGENCY: Send your location and personal details for rescue coordination',
-                'URGENT: Government aid requires your SSN and bank details for disaster relief',
-                'OFFICIAL: New evacuation route, follow link: http://fake-emergency-route.net'
-            };
-            command = commands{randi(length(commands))};
-            content = sprintf('[%s OFFICIAL]: %s - Code: %d', authority, command, randi(9999));
-            
-        case 2 % Fake family member in distress
-            family_scams = {
-                'This is your son! Phone damaged, trapped and need money for rescue!',
-                'Mom its me! Injured and need you to send cash to this address immediately!',
-                'Dad help! Lost wallet in flood, need money wired to help strangers who saved me',
-                'Sister emergency! In hospital but they need payment upfront, send money now!'
-            };
-            content = family_scams{randi(length(family_scams))};
-            
-        case 3 % Charity/donation scam
-            charity_scams = {
-                'DISASTER RELIEF: Donate now to help victims! Quick donate: http://fake-charity.net',
-                'URGENT AID: Children need food and shelter! Send money: http://scam-donation.org',
-                'EMERGENCY FUND: Help rebuild our community! Donate via: http://fake-relief.com',
-                'VICTIM SUPPORT: Families lost everything! Contribute: http://fraud-aid.net'
-            };
-            content = charity_scams{randi(length(charity_scams))};
-    end
-end
 
 function content = generateMisinformationContent(node)
     % Check if attack_params exists and has disinformation_type
@@ -1743,7 +1696,6 @@ function shared_model = createSharedIDSModel()
     shared_model.attack_types = {'NORMAL', 'FLOODING', 'SPOOFING', 'INJECTION', ...
                                 'EXPLOITATION', 'MISINFORMATION', 'RESOURCE_DRAIN'};
     
-    % ADD THESE MISSING FIELDS:
     shared_model.feature_weights = rand(43, 1);
     shared_model.rules = createDetectionRules();
     shared_model.hybrid_mode = true;
@@ -1755,7 +1707,6 @@ function shared_model = createSharedIDSModel()
     shared_model = trainRandomForestModel(shared_model);
 end
 function node = cleanupMessageCache(node, current_time)
-    % Remove messages older than cache_duration
     message_ids = keys(node.message_cache);
     
     for i = 1:length(message_ids)
@@ -1764,7 +1715,6 @@ function node = cleanupMessageCache(node, current_time)
         
         if current_time - cache_entry.cache_time > node.cache_duration
             remove(node.message_cache, msg_id);
-            fprintf('Node %d removed cached message %s (expired)\n', node.id, msg_id);
         end
     end
 end
@@ -1931,8 +1881,9 @@ function runBluetoothMeshSimulation()
     
     % Create normal nodes with random positions
     for i = 1:NUM_NORMAL_NODES
-        x = rand() * AREA_SIZE;
-        y = rand() * AREA_SIZE;
+        [x, y] = getGridPosition(i, TOTAL_NODES, AREA_SIZE, TRANSMISSION_RANGE);
+
+        
         node = createNormalNode(i, x, y);
         node.ids_model = shared_ids_model;  % ← SAME model for all
         nodes = [nodes, node];
@@ -1940,8 +1891,9 @@ function runBluetoothMeshSimulation()
     
     % Create attacker nodes
     for i = 1:NUM_ATTACK_NODES
-        x = rand() * AREA_SIZE;
-        y = rand() * AREA_SIZE;
+        [x, y] = getGridPosition(NUM_NORMAL_NODES + i, TOTAL_NODES, AREA_SIZE, TRANSMISSION_RANGE);
+
+        
         attacker = createAdvancedAttackerNode(NUM_NORMAL_NODES + i, x, y);
         attacker.ids_model = shared_ids_model;  
         nodes = [nodes, attacker];
@@ -1987,7 +1939,7 @@ function runBluetoothMeshSimulation()
                 
                 % Choose message type randomly
                 if rand() < 0.8  % 80% chance for data message
-                    content = generateAdvancedAttackContent(node);
+                    content = generateNormalMessage();
                     destination = randi(NUM_NORMAL_NODES);
                     if destination ~= nodes(sender_idx).id
                         message = sendMessage(nodes(sender_idx), content, 'DATA', destination, current_time);
@@ -2044,23 +1996,26 @@ function runBluetoothMeshSimulation()
                             if ~isempty(neighbor_idx) && nodes(neighbor_idx).is_active
                                 % Check if neighbor already has this message
                                 if ~nodeHasMessage(nodes(neighbor_idx), msg_id)
-                                    % Check if we haven't already forwarded to this neighbor
                                     if ~ismember(neighbor_id, cache_entry.forwarded_to)
-                                        
                                         if rand() < 0.9  % 90% transmission success
                                             % Forward the message
                                             forwarded_msg = cache_entry.message;
                                             forwarded_msg.hop_count = forwarded_msg.hop_count + 1;
                                             forwarded_msg.ttl = forwarded_msg.ttl - 1;
-                                            
-                                            [nodes(neighbor_idx), detection_result] = receiveMessage(nodes(neighbor_idx), forwarded_msg, current_time, nodes(i));
-                                            
-                                            % Mark as forwarded to this neighbor
-                                            cache_entry.forwarded_to(end+1) = neighbor_id;
-                                            nodes(i).message_cache(msg_id) = cache_entry;
-                                            
-                                            fprintf('Node %d forwarded cached message %s to Node %d\n', ...
-                                                nodes(i).id, msg_id, neighbor_id);
+            
+                                            if neighbor_id ~= forwarded_msg.source_id
+                                                [nodes(neighbor_idx), detection_result] = receiveMessage(nodes(neighbor_idx), forwarded_msg, current_time, nodes(i));
+                                                
+                                                % Mark as forwarded to this neighbor
+                                                cache_entry.forwarded_to(end+1) = neighbor_id;
+                                                nodes(i).message_cache(msg_id) = cache_entry;
+                                                
+                                                fprintf('Node %d forwarded cached message %s to Node %d\n', ...
+                                                    nodes(i).id, msg_id, neighbor_id);
+                                            else
+                                                fprintf('Prevented forwarding message %s back to source Node %d\n', ...
+                                                    msg_id, neighbor_id);
+                                            end
                                         end
                                     end
                                 end
@@ -2145,4 +2100,4 @@ rng(42);
 runBluetoothMeshSimulation();
 
 fprintf('\nSimulation completed successfully!\n');
-fprintf('Check the simulation_results folder for detailed output files.\n');f
+fprintf('Check the simulation_results folder for detailed output files.\n');
