@@ -24,6 +24,43 @@ simulation_data.network_events = struct([])
 simulation_data.statistics = struct();
 simulation_data.current_time = 0;
 
+
+global MESSAGE_LOG ATTACK_LOG NETWORK_LOG FEATURE_LOG LOGGING_CONFIG;
+
+%% Initialize logging configuration
+LOGGING_CONFIG = struct();
+LOGGING_CONFIG.enable_detailed_logging = true;
+LOGGING_CONFIG.log_all_messages = true;
+LOGGING_CONFIG.log_features = true;
+LOGGING_CONFIG.log_content = true;
+LOGGING_CONFIG.export_interval = 300; % Export every 5 minutes
+LOGGING_CONFIG.max_log_size = 10000; % Maximum logged messages before auto-export
+
+
+function initializeRealDataLogging()
+    global MESSAGE_LOG ATTACK_LOG NETWORK_LOG FEATURE_LOG;
+    
+    % Initialize comprehensive logging structures
+    MESSAGE_LOG = struct();
+    MESSAGE_LOG.entries = struct([]); % Empty struct array
+    MESSAGE_LOG.count = 0;
+    MESSAGE_LOG.start_time = now();
+    
+    ATTACK_LOG = struct();
+    ATTACK_LOG.entries = struct([]);
+    ATTACK_LOG.count = 0;
+    
+    NETWORK_LOG = struct();
+    NETWORK_LOG.entries = struct([]);
+    NETWORK_LOG.count = 0;
+    
+    FEATURE_LOG = struct();
+    FEATURE_LOG.entries = struct([]);
+    FEATURE_LOG.count = 0;
+    
+    fprintf('Real data logging system initialized\n');
+end
+
 %% Node Creation Functions
 function node = createAttackerNode(id, x, y)
     node = struct();
@@ -49,6 +86,10 @@ function node = createAttackerNode(id, x, y)
     node.message_cache = containers.Map();
     node.cache_duration = 20;
     node.attack_params = struct(); % Will be populated by advanced attacker function
+
+    node.last_message_received_time = -1;  % Time when last message was received
+    node.message_flash_duration = 2;       % Flash for 2 seconds
+    node.currently_flashing = false;       % Is node currently flashing?
 end
 
 function node = createNormalNode(id, x, y)
@@ -73,6 +114,10 @@ function node = createNormalNode(id, x, y)
     node.message_cache = containers.Map();
     node.cache_duration = 20;
     node.attack_params = struct(); % Empty struct for normal nodes
+
+    node.last_message_received_time = -1;  % Time when last message was received
+    node.message_flash_duration = 2;       % Flash for 2 seconds
+    node.currently_flashing = false;       % Is node currently flashing?
 end
 
 function node = createAdvancedAttackerNode(id, x, y)
@@ -226,6 +271,7 @@ message.is_attack = node.is_attacker; % Any message from attacker is an attack
 end
 
 function [node, detection_result] = receiveMessage(node, message, current_time, sender_node)
+    global LOGGING_CONFIG;
     detection_result = [];
     
     if ~node.is_active || node.battery_level < 0.1
@@ -235,29 +281,199 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
         fprintf('Node %d already has message %s, ignoring duplicate\n', node.id, message.id);
         return;
     end
+    
     cache_entry = struct();
     cache_entry.message = message;
     cache_entry.cache_time = current_time;
-    cache_entry.forwarded_to = []; % Will track neighbors we forward to
+    cache_entry.forwarded_to = [];
     node.message_cache(message.id) = cache_entry;
-    
-    % Print message path
+    %Node Flashing
+    node.last_message_received_time = current_time;
+    node.currently_flashing = true;
     fprintf('Message %s: From Node %d → To Node %d (new)\n', ...
         message.id, message.source_id, node.id);
     
-    % Store message in buffer
     node.message_buffer{end+1} = message;
     node.message_history{end+1} = message;
     
-    % If not attacker, run IDS detection
+    % Extract features for logging
+    features = extractMessageFeatures(node, message, sender_node, current_time);
+    
+    % Run IDS detection if not attacker
     if ~node.is_attacker
         [node, detection_result] = runIDSDetection(node, message, sender_node, current_time);
-        logMessageDetails(message, detection_result, node, current_time);
+        
+        % LOG THE REAL DATA HERE
+        if LOGGING_CONFIG.enable_detailed_logging
+            logRealMessageData(message, sender_node, node, features, detection_result, current_time);
+        end
     end
     
     % Consume battery
     node.battery_level = node.battery_level - 0.0005;
 end
+
+
+
+
+function logRealMessageData(message, sender_node, receiver_node, features, detection_result, current_time)
+    global MESSAGE_LOG FEATURE_LOG;
+    
+    % Log detailed message information
+    log_entry = struct();
+    
+    % Basic message information
+    log_entry.message_id = message.id;
+    log_entry.timestamp = current_time;
+    log_entry.matlab_timestamp = now();
+    log_entry.sender_id = message.source_id;
+    log_entry.receiver_id = receiver_node.id;
+    log_entry.destination_id = message.destination_id;
+    log_entry.message_type = message.type;
+    log_entry.hop_count = message.hop_count;
+    log_entry.ttl = message.ttl;
+    log_entry.size_bytes = message.size_bytes;
+    
+    % Ground truth labels (MOST IMPORTANT FOR TRAINING)
+    log_entry.is_attack = message.is_attack;
+    if sender_node.is_attacker
+        log_entry.true_attack_type = sender_node.attack_strategy;
+        log_entry.attacker_node_id = sender_node.id;
+    else
+        log_entry.true_attack_type = 'NORMAL';
+        log_entry.attacker_node_id = -1;
+    end
+    
+    % Message content
+    log_entry.content = message.content;
+    log_entry.content_length = length(message.content);
+    
+    % Node characteristics
+    log_entry.sender_battery = sender_node.battery_level;
+    log_entry.sender_neighbors = length(sender_node.neighbors);
+    log_entry.receiver_battery = receiver_node.battery_level;
+    log_entry.receiver_neighbors = length(receiver_node.neighbors);
+    
+    % Network context
+    distance = norm(sender_node.position - receiver_node.position);
+    log_entry.transmission_distance = distance;
+    log_entry.signal_strength = max(0.1, 1 - (distance / 50));
+    
+    % Detection results (if available)
+    if ~isempty(detection_result)
+        log_entry.detected_as_attack = detection_result.is_attack;
+        log_entry.detected_attack_type = detection_result.attack_type;
+        log_entry.detection_confidence = detection_result.confidence;
+        log_entry.processing_time_ms = detection_result.processing_time_ms;
+        
+        % Calculate performance metrics
+        log_entry.true_positive = log_entry.is_attack && log_entry.detected_as_attack;
+        log_entry.true_negative = ~log_entry.is_attack && ~log_entry.detected_as_attack;
+        log_entry.false_positive = ~log_entry.is_attack && log_entry.detected_as_attack;
+        log_entry.false_negative = log_entry.is_attack && ~log_entry.detected_as_attack;
+    else
+        log_entry.detected_as_attack = false;
+        log_entry.detected_attack_type = 'NONE';
+        log_entry.detection_confidence = 0;
+        log_entry.processing_time_ms = 0;
+        log_entry.true_positive = false;
+        log_entry.true_negative = false;
+        log_entry.false_positive = false;
+        log_entry.false_negative = false;
+    end
+    
+    % Add to message log
+    MESSAGE_LOG.count = MESSAGE_LOG.count + 1;
+    if MESSAGE_LOG.count == 1
+        MESSAGE_LOG.entries = log_entry;
+    else
+        MESSAGE_LOG.entries(end+1) = log_entry;
+    end
+    
+    % Log feature vector for ML training
+    logFeatureVectorData(message, features, detection_result, sender_node, receiver_node, current_time);
+end
+
+function logFeatureVectorData(message, features, detection_result, sender_node, receiver_node, current_time)
+    global FEATURE_LOG;
+    
+    feature_entry = struct();
+    feature_entry.message_id = message.id;
+    feature_entry.timestamp = current_time;
+    feature_entry.matlab_timestamp = now();
+    
+    % The 43 features for ML training
+    feature_entry.features = features;
+    
+    % Ground truth labels
+    feature_entry.is_attack = message.is_attack;
+    if sender_node.is_attacker
+        feature_entry.true_attack_type = sender_node.attack_strategy;
+    else
+        feature_entry.true_attack_type = 'NORMAL';
+    end
+    
+    % Detection results
+    if ~isempty(detection_result)
+        feature_entry.detected_as_attack = detection_result.is_attack;
+        feature_entry.detected_attack_type = detection_result.attack_type;
+        feature_entry.detection_confidence = detection_result.confidence;
+        feature_entry.processing_time_ms = detection_result.processing_time_ms;
+    end
+    
+    % Context
+    feature_entry.sender_id = sender_node.id;
+    feature_entry.receiver_id = receiver_node.id;
+    
+    % Add to feature log
+    FEATURE_LOG.count = FEATURE_LOG.count + 1;
+    if FEATURE_LOG.count == 1
+        FEATURE_LOG.entries = feature_entry;
+    else
+        FEATURE_LOG.entries(end+1) = feature_entry;
+    end
+end
+
+function logAttackEvent(attacker_node, target_node_id, attack_message, current_time)
+    global ATTACK_LOG;
+    
+    attack_entry = struct();
+    attack_entry.timestamp = current_time;
+    attack_entry.matlab_timestamp = now();
+    attack_entry.attacker_id = attacker_node.id;
+    attack_entry.attack_strategy = attacker_node.attack_strategy;
+    attack_entry.target_node_id = target_node_id;
+    attack_entry.attacker_position_x = attacker_node.position(1);
+    attack_entry.attacker_position_y = attacker_node.position(2);
+    attack_entry.attacker_battery = attacker_node.battery_level;
+    attack_entry.attack_frequency = attacker_node.attack_frequency;
+    attack_entry.message_content = attack_message.content;
+    attack_entry.message_id = attack_message.id;
+    
+    % Attack-specific parameters
+    if isfield(attacker_node, 'attack_params')
+        attack_entry.attack_params = attacker_node.attack_params;
+    end
+    
+    % Add to attack log
+    ATTACK_LOG.count = ATTACK_LOG.count + 1;
+    if ATTACK_LOG.count == 1
+        ATTACK_LOG.entries = attack_entry;
+    else
+        ATTACK_LOG.entries(end+1) = attack_entry;
+    end
+    
+    fprintf('ATTACK LOGGED: Node %d launched %s attack targeting Node %d\n', ...
+        attacker_node.id, attacker_node.attack_strategy, target_node_id);
+end
+
+
+
+
+
+
+
+
 %Detection Rules for Rule-based Detection
 function rules = createDetectionRules()
     rules = struct();
@@ -947,6 +1163,8 @@ end
 
 %% Attacker Functions
 function node = launchAttack(node, current_time, target_nodes)
+    global LOGGING_CONFIG;
+    
     if current_time - node.last_attack_time < node.attack_frequency
         return;
     end
@@ -967,7 +1185,99 @@ function node = launchAttack(node, current_time, target_nodes)
         node.id, node.attack_strategy, current_time);
     
     % Send attack message
-    message = sendMessage(node, attack_content, 'DATA', target_id, current_time);
+    [node, message] = sendMessage(node, attack_content, 'DATA', target_id, current_time);
+    
+    % LOG THE ATTACK EVENT
+    if LOGGING_CONFIG.enable_detailed_logging && ~isempty(message)
+        logAttackEvent(node, target_id, message, current_time);
+    end
+end
+
+
+
+
+function exportRealTrainingData(export_type)
+    global MESSAGE_LOG ATTACK_LOG FEATURE_LOG;
+    
+    if nargin < 1
+        export_type = 'simulation';
+    end
+    
+    timestamp = datestr(now, 'yyyymmdd_HHMMSS');
+    
+    % Create export directory
+    export_dir = 'real_training_data';
+    if ~exist(export_dir, 'dir')
+        mkdir(export_dir);
+    end
+    
+    fprintf('\n=== EXPORTING REAL TRAINING DATA ===\n');
+    fprintf('Export type: %s\n', export_type);
+    fprintf('Timestamp: %s\n', timestamp);
+    
+    % Export message log (detailed data)
+    if MESSAGE_LOG.count > 0
+        fprintf('Exporting %d real message samples...\n', MESSAGE_LOG.count);
+        
+        % Convert to table for CSV export
+        message_table = struct2table(MESSAGE_LOG.entries);
+        csv_filename = fullfile(export_dir, sprintf('real_messages_%s_%s.csv', export_type, timestamp));
+        writetable(message_table, csv_filename);
+        
+        % Save as MAT file
+        mat_filename = fullfile(export_dir, sprintf('real_messages_%s_%s.mat', export_type, timestamp));
+        message_data = MESSAGE_LOG.entries;
+        save(mat_filename, 'message_data');
+        
+        fprintf('Real message data exported to:\n  CSV: %s\n  MAT: %s\n', csv_filename, mat_filename);
+    end
+    
+    % Export feature vectors for ML training (MOST IMPORTANT)
+    if FEATURE_LOG.count > 0
+        fprintf('Exporting %d feature vectors for ML training...\n', FEATURE_LOG.count);
+        
+        % Create ML-ready dataset
+        features_matrix = zeros(FEATURE_LOG.count, 43);
+        labels = cell(FEATURE_LOG.count, 1);
+        
+        for i = 1:FEATURE_LOG.count
+            features_matrix(i, :) = FEATURE_LOG.entries(i).features;
+            labels{i} = FEATURE_LOG.entries(i).true_attack_type;
+        end
+        
+        % Export feature matrix and labels for training
+        ml_data_filename = fullfile(export_dir, sprintf('ML_training_data_%s_%s.mat', export_type, timestamp));
+        save(ml_data_filename, 'features_matrix', 'labels');
+        
+        % Export detailed feature log
+        feature_table = struct2table(FEATURE_LOG.entries);
+        feature_csv = fullfile(export_dir, sprintf('feature_vectors_%s_%s.csv', export_type, timestamp));
+        writetable(feature_table, feature_csv);
+        
+        fprintf('ML training data exported to:\n  MAT: %s\n  CSV: %s\n', ml_data_filename, feature_csv);
+        
+        % Display dataset statistics
+        unique_labels = unique(labels);
+        fprintf('\nReal dataset statistics:\n');
+        fprintf('Total samples: %d\n', length(labels));
+        for i = 1:length(unique_labels)
+            count = sum(strcmp(labels, unique_labels{i}));
+            fprintf('  %s: %d samples (%.1f%%)\n', unique_labels{i}, count, (count/length(labels))*100);
+        end
+    end
+    
+    % Export attack events
+    if ATTACK_LOG.count > 0
+        fprintf('Exporting %d attack events...\n', ATTACK_LOG.count);
+        
+        attack_table = struct2table(ATTACK_LOG.entries);
+        attack_filename = fullfile(export_dir, sprintf('real_attacks_%s_%s.csv', export_type, timestamp));
+        writetable(attack_table, attack_filename);
+        
+        fprintf('Attack event data exported to: %s\n', attack_filename);
+    end
+    
+    fprintf('=== REAL DATA EXPORT COMPLETED ===\n\n');
 end
 
 function content = generateAdvancedAttackContent(node)
@@ -1227,25 +1537,17 @@ function visualizeNetwork(nodes, current_time)
     clf;
     hold on;
     
-    % Plot normal nodes
+    % Update flash status for all nodes
     for i = 1:length(nodes)
-        if ~nodes(i).is_attacker
-            scatter(nodes(i).position(1), nodes(i).position(2), 100, 'b', 'filled');
-            text(nodes(i).position(1)+5, nodes(i).position(2)+5, sprintf('N%d', nodes(i).id), ...
-                'FontSize', 8, 'Color', 'blue');
+        if nodes(i).currently_flashing
+            % Check if flash duration has expired
+            if current_time - nodes(i).last_message_received_time > nodes(i).message_flash_duration
+                nodes(i).currently_flashing = false;
+            end
         end
     end
     
-    % Plot attacker nodes
-    for i = 1:length(nodes)
-        if nodes(i).is_attacker
-            scatter(nodes(i).position(1), nodes(i).position(2), 120, 'r', 'filled', 's');
-            text(nodes(i).position(1)+5, nodes(i).position(2)+5, sprintf('A%d', nodes(i).id), ...
-                'FontSize', 8, 'Color', 'red', 'FontWeight', 'bold');
-        end
-    end
-    
-    % Draw connections
+    % Plot connections first (so they appear behind nodes)
     for i = 1:length(nodes)
         for j = 1:length(nodes(i).neighbors)
             neighbor_id = nodes(i).neighbors(j);
@@ -1258,15 +1560,135 @@ function visualizeNetwork(nodes, current_time)
         end
     end
     
+    % Plot normal nodes with flash effect
+    for i = 1:length(nodes)
+        if ~nodes(i).is_attacker
+            if nodes(i).currently_flashing
+                % Flash GREEN when receiving message
+                scatter(nodes(i).position(1), nodes(i).position(2), 120, 'g', 'filled', 'o', ...
+                    'MarkerEdgeColor', 'k', 'LineWidth', 2);
+                text(nodes(i).position(1)+5, nodes(i).position(2)+5, sprintf('N%d', nodes(i).id), ...
+                    'FontSize', 8, 'Color', 'green', 'FontWeight', 'bold');
+            else
+                % Normal BLUE color
+                scatter(nodes(i).position(1), nodes(i).position(2), 100, 'b', 'filled', 'o');
+                text(nodes(i).position(1)+5, nodes(i).position(2)+5, sprintf('N%d', nodes(i).id), ...
+                    'FontSize', 8, 'Color', 'blue');
+            end
+        end
+    end
+    
+    % Plot attacker nodes with flash effect
+    for i = 1:length(nodes)
+        if nodes(i).is_attacker
+            if nodes(i).currently_flashing
+                % Flash GREEN when receiving message (even attackers can receive)
+                scatter(nodes(i).position(1), nodes(i).position(2), 140, 'g', 'filled', 's', ...
+                    'MarkerEdgeColor', 'k', 'LineWidth', 2);
+                text(nodes(i).position(1)+5, nodes(i).position(2)+5, sprintf('A%d', nodes(i).id), ...
+                    'FontSize', 8, 'Color', 'green', 'FontWeight', 'bold');
+            else
+                % Normal RED color for attackers
+                scatter(nodes(i).position(1), nodes(i).position(2), 120, 'r', 'filled', 's');
+                text(nodes(i).position(1)+5, nodes(i).position(2)+5, sprintf('A%d', nodes(i).id), ...
+                    'FontSize', 8, 'Color', 'red', 'FontWeight', 'bold');
+            end
+        end
+    end
+    
+    % Add battery level indicators (optional enhancement)
+    for i = 1:length(nodes)
+        if nodes(i).battery_level < 0.3  % Low battery warning
+            % Add red circle around low battery nodes
+            theta = linspace(0, 2*pi, 100);
+            battery_circle_x = nodes(i).position(1) + 15 * cos(theta);
+            battery_circle_y = nodes(i).position(2) + 15 * sin(theta);
+            plot(battery_circle_x, battery_circle_y, 'r-', 'LineWidth', 2);
+        end
+    end
+    
     xlim([0 200]);
     ylim([0 200]);
     grid on;
     title(sprintf('Bluetooth Mesh Network at Time: %.1f seconds', current_time));
     xlabel('X Position (meters)');
     ylabel('Y Position (meters)');
-    legend({'Normal Nodes', 'Attacker Nodes'}, 'Location', 'best');
+    
+    % Enhanced legend
+    legend_handles = [];
+    legend_labels = {};
+    
+    % Normal node (not flashing)
+    h1 = scatter(NaN, NaN, 100, 'b', 'filled', 'o');
+    legend_handles(end+1) = h1;
+    legend_labels{end+1} = 'Normal Nodes';
+    
+    % Attacker node (not flashing)
+    h2 = scatter(NaN, NaN, 120, 'r', 'filled', 's');
+    legend_handles(end+1) = h2;
+    legend_labels{end+1} = 'Attacker Nodes';
+    
+    % Flashing node (receiving message)
+    h3 = scatter(NaN, NaN, 120, 'g', 'filled', 'o', 'MarkerEdgeColor', 'k', 'LineWidth', 2);
+    legend_handles(end+1) = h3;
+    legend_labels{end+1} = 'Receiving Message';
+    
+    legend(legend_handles, legend_labels, 'Location', 'best');
+    
     hold off;
     drawnow;
+end
+
+function visualizeMessageTransmission(sender_node, receiver_node, message)
+    % Draw animated line from sender to receiver
+    x_path = linspace(sender_node.position(1), receiver_node.position(1), 20);
+    y_path = linspace(sender_node.position(2), receiver_node.position(2), 20);
+    
+    % Animate the message transmission
+    for i = 1:length(x_path)
+        plot(x_path(1:i), y_path(1:i), 'y-', 'LineWidth', 3);
+        pause(0.05); % Small delay for animation effect
+        drawnow;
+    end
+    
+    % Add message info text
+    mid_x = (sender_node.position(1) + receiver_node.position(1)) / 2;
+    mid_y = (sender_node.position(2) + receiver_node.position(2)) / 2;
+    
+    if message.is_attack
+        text(mid_x, mid_y, 'ATTACK!', 'FontSize', 10, 'Color', 'red', ...
+            'FontWeight', 'bold', 'BackgroundColor', 'white');
+    else
+        text(mid_x, mid_y, 'MSG', 'FontSize', 8, 'Color', 'blue', ...
+            'BackgroundColor', 'white');
+    end
+end
+
+function displayNetworkActivity(nodes, current_time)
+    % Count currently flashing nodes
+    flashing_count = sum([nodes.currently_flashing]);
+    
+    % Count recent message activity (last 10 seconds)
+    recent_activity = 0;
+    for i = 1:length(nodes)
+        if nodes(i).last_message_received_time > 0 && ...
+           (current_time - nodes(i).last_message_received_time) <= 10
+            recent_activity = recent_activity + 1;
+        end
+    end
+    
+    % Display activity statistics on the plot
+    text(10, 190, sprintf('Currently Receiving: %d nodes', flashing_count), ...
+        'FontSize', 12, 'Color', 'green', 'FontWeight', 'bold', ...
+        'BackgroundColor', 'white');
+    
+    text(10, 180, sprintf('Recent Activity (10s): %d nodes', recent_activity), ...
+        'FontSize', 10, 'Color', 'blue', ...
+        'BackgroundColor', 'white');
+    
+    text(10, 170, sprintf('Time: %.1f seconds', current_time), ...
+        'FontSize', 10, 'Color', 'black', ...
+        'BackgroundColor', 'white');
 end
 
 function updateStatistics(current_time)
@@ -1857,12 +2279,29 @@ function exportTrainingDataset()
     save(mat_filename, 'message_log');
     fprintf('Message log saved to: %s\n', mat_filename);
 end
+function nodes = updateFlashStates(nodes, current_time)
+    % Update flash status for all nodes
+    for i = 1:length(nodes)
+        if nodes(i).currently_flashing
+            % Check if flash duration has expired
+            time_since_flash = current_time - nodes(i).last_message_received_time;
+            if time_since_flash > nodes(i).message_flash_duration
+                nodes(i).currently_flashing = false;
+                fprintf('Node %d stopped flashing at time %.2f\n', nodes(i).id, current_time);
+            end
+        end
+    end
+end
 
 %% Main Simulation Function
 function runBluetoothMeshSimulation()
     global simulation_data;
     global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE ;
     message_log = struct([]);
+
+
+    initializeRealDataLogging();
+
 
     fprintf('Starting Bluetooth Mesh Network IDS Simulation...\n');
     fprintf('Network Configuration:\n');
@@ -2093,10 +2532,13 @@ function runBluetoothMeshSimulation()
     updateStatistics(current_time);
     stats_history(end+1) = simulation_data.statistics;
     
+
+    exportRealTrainingData('final');
     % Generate comprehensive report
     generateComprehensiveReport(nodes, stats_history);
     
     % Final visualizations
+    nodes = updateFlashStates(nodes, current_time);
     visualizeNetwork(nodes, current_time);
     plotRealTimeStatistics(stats_history);
     
