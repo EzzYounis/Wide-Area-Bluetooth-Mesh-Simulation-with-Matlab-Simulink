@@ -547,7 +547,7 @@ end
 
 function features = extractMessageFeatures(node, message, sender_node, current_time)
     % Extract comprehensive features for IDS detection
-    features = zeros(1, 43); % Matching the Python model's feature count
+    features = zeros(1, 43); % Matching the Python models feature count
     
     % Network topology features
     features(1) = length(node.neighbors) / 10; % node_density (normalized)
@@ -600,11 +600,51 @@ function features = extractMessageFeatures(node, message, sender_node, current_t
     features(38) = getEmergencyContextScore(message); % emergency_context_score
     
     % Multi-hop mesh specific
-    features(39) = 0.8; % route_stability (simulated)
+    features(39) = calculateRouteStability(node); % route_stability
     features(40) = 0.7; % forwarding_behavior (simulated)
-    features(41) = getSenderReputation(node, message.source_id); % neighbor_trust_score
-    features(42) = 0.8; % mesh_connectivity_health (simulated)
+    features(41) = calculateNeighborTrustScore(node, message.source_id); % neighbor_trust_score
+    features(42) = calculateMeshConnectivityHealth(); % mesh_connectivity_health
     features(43) = 0.7; % redundancy_factor (simulated)
+% --- Helper for mesh connectivity health ---
+function health = calculateMeshConnectivityHealth()
+    global simulation_data;
+    if ~isfield(simulation_data, 'nodes') || isempty(simulation_data.nodes)
+        health = 0.8; % fallback
+        return;
+    end
+    nodes = simulation_data.nodes;
+    neighbor_counts = arrayfun(@(x) length(x.neighbors), nodes);
+    avg_neighbors = mean(neighbor_counts);
+    health = avg_neighbors / max(1, (length(nodes)-1)); % Normalized [0,1]
+    health = min(max(health, 0), 1);
+end
+
+% --- Helper for neighbor trust score ---
+function trust = calculateNeighborTrustScore(node, sender_id)
+    if node.reputation_scores.isKey(num2str(sender_id))
+        trust = node.reputation_scores(num2str(sender_id));
+    else
+        trust = 0.8; % Default neutral trust
+    end
+end
+
+% --- Helper for route stability ---
+function stability = calculateRouteStability(node)
+    % Simple version: if node has a route_history field, compute stability
+    if isfield(node, 'route_history') && ~isempty(node.route_history)
+        % Count unique routes for each src-dst pair
+        unique_routes = numel(unique(node.route_history));
+        total_routes = numel(node.route_history);
+        if total_routes == 0
+            stability = 1.0;
+        else
+            stability = 1 - (unique_routes / total_routes); % More unique = less stable
+        end
+        stability = min(max(stability, 0), 1);
+    else
+        stability = 0.8; % fallback if no history
+    end
+end
 end
 
 %% Feature Calculation Functions
