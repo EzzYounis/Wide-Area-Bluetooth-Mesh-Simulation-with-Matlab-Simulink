@@ -42,7 +42,7 @@ function node = createAttackerNode(id, x, y)
     node.is_active = true;
     
     % Attacker-specific properties
-    strategies = {'FLOODING', 'SPOOFING', 'INJECTION', 'RESOURCE_DRAIN'};
+    strategies = {'FLOODING', 'ADAPTIVE_FLOODING', 'INJECTION', 'RESOURCE_EXHAUSTION', 'BLACK_HOLE'};
     node.attack_strategy = strategies{randi(length(strategies))};
     node.attack_frequency = 30 + 30 * rand(); % 30-60 seconds between attacks
     node.last_attack_time = 0;
@@ -82,39 +82,25 @@ function node = createAdvancedAttackerNode(id, x, y)
     
     % Enhanced attack strategies with specific parameters
     advanced_strategies = {
-        'ADAPTIVE_FLOODING', 'RESOURCE_EXHAUSTION', 'MISINFORMATION_CAMPAIGN', 'TIMING_ATTACK'
+        'FLOODING', 'ADAPTIVE_FLOODING', 'INJECTION', 'RESOURCE_EXHAUSTION', 'BLACK_HOLE'
     };
-    
     node.attack_strategy = advanced_strategies{randi(length(advanced_strategies))};
     node.attack_params = struct();
     % Strategy-specific parameters
     switch node.attack_strategy
+        case 'FLOODING'
+            % Basic flooding: no extra params needed
         case 'ADAPTIVE_FLOODING'
             node.attack_params.flood_pattern = randi([1, 4]);
             node.attack_params.message_burst_size = 5 + randi(10);
             node.attack_params.burst_interval = 20 + randi(40);
-            
-        case 'SOCIAL_ENGINEERING'
-            node.attack_params.target_persona = randi([1, 3]);
-            node.attack_params.urgency_level = 0.7 + 0.3 * rand();
-            node.attack_params.credential_spoofing = true;
-            
-        case 'PROTOCOL_MANIPULATION'
-            node.attack_params.ttl_manipulation = true;
-            node.attack_params.header_spoofing = true;
-            node.attack_params.routing_attack = true;
-            
+        case 'INJECTION'
+            % No extra params needed for injection
         case 'RESOURCE_EXHAUSTION'
             node.attack_params.target_resource = randi([1, 3]); % Battery, Processing, Memory
             node.attack_params.exhaustion_rate = 0.1 + 0.2 * rand(); % 0.1-0.3 depletion rate
-            
-        case 'MISINFORMATION_CAMPAIGN'
-            node.attack_params.disinformation_type = randi([1, 4]); % False alarms, Wrong locations, etc.
-            node.attack_params.credibility_mimicking = true;
-            
-        case 'TIMING_ATTACK'
-            node.attack_params.peak_hour_targeting = true;
-            node.attack_params.response_delay_injection = true;
+        case 'BLACK_HOLE'
+            % No extra params needed for black hole
     end
     
     % Dynamic attack frequency based on strategy
@@ -229,7 +215,6 @@ end
 
 function [node, detection_result] = receiveMessage(node, message, current_time, sender_node)
     detection_result = [];
-    
     if ~node.is_active || node.battery_level < 0.1
         return;
     end
@@ -240,13 +225,19 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
     cache_entry = struct();
     cache_entry.message = message;
     cache_entry.cache_time = current_time;
-    cache_entry.forwarded_to = []; % Will track neighbors we forward to
+    cache_entry.forwarded_to = [];
     node.message_cache(message.id) = cache_entry;
-    
+
+    % Black hole attack: drop all received messages, do not buffer or forward
+    if node.is_attacker && isfield(node, 'attack_strategy') && strcmp(node.attack_strategy, 'BLACK_HOLE')
+        fprintf('BLACK HOLE: Node %d dropped message %s\n', node.id, message.id);
+        return;
+    end
+
     % Print message path
     fprintf('Message %s: From Node %d → To Node %d (new)\n', ...
         message.id, message.source_id, node.id);
-    
+
     % Enforce buffer size limit (by total bytes)
     current_bytes = sum(cellfun(@(msg) length(msg.content), node.message_buffer));
     if current_bytes + length(message.content) > node.max_buffer_bytes
@@ -256,13 +247,13 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
     % Store message in buffer
     node.message_buffer{end+1} = message;
     node.message_history{end+1} = message;
-    
+
     % If not attacker, run IDS detection
     if ~node.is_attacker
         [node, detection_result] = runIDSDetection(node, message, sender_node, current_time);
         logMessageDetails(message, detection_result, node, current_time);
     end
-    
+
     % Consume battery
     node.battery_level = node.battery_level - 0.0005;
 end
@@ -1036,23 +1027,35 @@ function content = generateAdvancedAttackContent(node)
         content = generateNormalMessage();
         return;
     end
-    
+
     switch node.attack_strategy
+        case 'FLOODING'
+            content = generateFloodingContent(node);
         case 'ADAPTIVE_FLOODING'
             content = generateAdaptiveFloodingContent(node);
-       
+        case 'INJECTION'
+            content = generateInjectionContent(node);
         case 'RESOURCE_EXHAUSTION'
             content = generateResourceExhaustionContent(node);
-            
-        case 'MISINFORMATION_CAMPAIGN'
-            content = generateMisinformationContent(node);
-            
-        case 'TIMING_ATTACK'
-            content = generateTimingAttackContent(node);
-            
+        case 'BLACK_HOLE'
+            content = ''; % Black hole does not generate content
         otherwise
-            content = generateAttackContent(node); % Fallback to original
+            content = generateNormalMessage();
     end
+function content = generateFloodingContent(node)
+    % Simple flooding: repeat a generic message many times
+    base_msg = 'FLOOD ALERT: WATER LEVELS RISING! ';
+    content = repmat(base_msg, 1, 30 + randi(20));
+end
+
+function content = generateInjectionContent(node)
+    % Injection: suspicious command patterns and special chars
+    patterns = {'delete', 'exec', 'system', 'rm', 'cmd', 'bash', 'sh'};
+    special = '!@#$%^&*()_+';
+    base = 'INJECTION ATTACK: ';
+    pattern = patterns{randi(length(patterns))};
+    content = [base, pattern, ' ', repmat(special, 1, 10 + randi(10))];
+end
 end
 
 
