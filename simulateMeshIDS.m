@@ -3,6 +3,7 @@
 % Author: Research Simulation
 % Date: 2024
 
+
 clear all; close all; clc;
 
 %% Simulation Parameters
@@ -11,7 +12,7 @@ NUM_NORMAL_NODES = 15;
 NUM_ATTACK_NODES = 2;
 TOTAL_NODES = NUM_NORMAL_NODES + NUM_ATTACK_NODES;
 MESSAGE_INTERVAL = 15; % seconds
-SIMULATION_TIME = 10 * 60; % 10 minutes in seconds
+SIMULATION_TIME = 30 * 60; % 10 minutes in seconds
 TRANSMISSION_RANGE = 50; % meters
 AREA_SIZE = 200; % 200x200 meter area
 
@@ -458,6 +459,34 @@ function [node, detection_result] = runIDSDetection(node, message, sender_node, 
     
     % Extract features for IDS
     features = extractMessageFeatures(node, message, sender_node, current_time);
+
+    % Log features and label for dataset preparation
+    global feature_log;
+    log_entry = struct();
+    log_entry.message_id = message.id;
+    log_entry.timestamp = current_time;
+    log_entry.source_id = message.source_id;
+    log_entry.destination_id = message.destination_id;
+    log_entry.is_attack = message.is_attack;
+    
+    % Determine true attack type based on sender node's attack strategy
+    if message.is_attack && ~isempty(sender_node) && sender_node.is_attacker
+        % Use sender node's attack strategy as the true attack type
+        if isfield(sender_node, 'attack_strategy') && ~isempty(sender_node.attack_strategy)
+            log_entry.attack_type = sender_node.attack_strategy;
+        else
+            log_entry.attack_type = 'UNKNOWN_ATTACK';
+        end
+    else
+        log_entry.attack_type = 'NORMAL';
+    end
+    
+    log_entry.features = features; % 43-element feature vector
+    if isempty(feature_log)
+        feature_log = log_entry;
+    else
+        feature_log(end+1) = log_entry;
+    end
     
     % NEW: Run both rule-based and AI-based detection
     if node.ids_model.hybrid_mode
@@ -636,6 +665,37 @@ function stability = calculateRouteStability(node)
         stability = 0.8; % fallback if no history
     end
 end
+end
+
+% Export feature log as dataset (call this at the end of your main script)
+function exportFeatureDataset()
+    global feature_log;
+    if isempty(feature_log)
+        fprintf('No feature log to export.\n');
+        return;
+    end
+    % Convert to table for easy export
+    feature_table = struct2table(feature_log);
+    % Expand features into separate columns
+    features_matrix = vertcat(feature_log.features);
+    for i = 1:43
+        feature_table.(['feature_' num2str(i)]) = features_matrix(:,i);
+    end
+    feature_table.features = [];
+    
+    % Ensure attack_type column is properly formatted as categorical for better CSV export
+    if ismember('attack_type', feature_table.Properties.VariableNames)
+        feature_table.attack_type = categorical(feature_table.attack_type);
+    end
+    % Save as CSV
+    results_dir = 'training_data';
+    if ~exist(results_dir, 'dir')
+        mkdir(results_dir);
+    end
+    timestamp = datestr(now, 'yyyymmdd_HHMMSS');
+    csv_filename = fullfile(results_dir, sprintf('feature_dataset_%s.csv', timestamp));
+    writetable(feature_table, csv_filename);
+    fprintf('Feature dataset exported to: %s\n', csv_filename);
 end
 
 %% Feature Calculation Functions
@@ -1926,6 +1986,8 @@ end
 function runBluetoothMeshSimulation()
     global simulation_data;
     global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE ;
+    global feature_log;
+    
     message_log = struct([]);
 
     fprintf('Starting Bluetooth Mesh Network IDS Simulation...\n');
@@ -1987,9 +2049,21 @@ function runBluetoothMeshSimulation()
         simulation_data.current_time = current_time;
 
         % Random node mobility event
+        fprintf('=== Mobility Event Check: current_time=%.1f, next_mobility_time=%.1f ===\n', current_time, next_mobility_time);
         if current_time >= next_mobility_time
             movable_indices = find([nodes.is_active]);
             if ~isempty(movable_indices)
+                % Debug: Show list of active nodes and attacker status
+                fprintf('>>> ACTIVE NODE LIST (at time %.1f): ', current_time);
+                for idx = 1:length(movable_indices)
+                    node_id = nodes(movable_indices(idx)).id;
+                    if nodes(movable_indices(idx)).is_attacker
+                        fprintf('[A%d] ', node_id);
+                    else
+                        fprintf('[N%d] ', node_id);
+                    end
+                end
+                fprintf('\n');
                 move_idx = movable_indices(randi(length(movable_indices)));
                 % Move to a new random position within area
                 nodes(move_idx).position = [AREA_SIZE*rand(), AREA_SIZE*rand()];
@@ -1997,7 +2071,9 @@ function runBluetoothMeshSimulation()
                 for j = 1:length(nodes)
                     nodes(j) = updateNeighbors(nodes(j), nodes, TRANSMISSION_RANGE);
                 end
-                fprintf('Node %d moved to new position at time %.1f\n', nodes(move_idx).id, current_time);
+                fprintf('>>> Node %d moved to new position at time %.1f\n', nodes(move_idx).id, current_time);
+            else
+                fprintf('>>> No active nodes available for mobility at time %.1f\n', current_time);
             end
             % Schedule next mobility event
             next_mobility_time = current_time + randi([30,90]);
@@ -2150,6 +2226,9 @@ function runBluetoothMeshSimulation()
     
     fprintf('\nExporting training dataset...\n');
     exportTrainingDataset();
+    
+    fprintf('\nExporting feature dataset...\n');
+    exportFeatureDataset();
 
     fprintf('\nSimulation completed!\n');
     
@@ -2177,7 +2256,7 @@ fprintf('This simulation demonstrates AI-assisted intrusion detection\n');
 fprintf('in a disaster-affected Bluetooth mesh network.\n\n');
 
 % Set random seed for reproducibility
-rng(42);
+rng('shuffle');
 
 % Run the main simulation
 runBluetoothMeshSimulation();
