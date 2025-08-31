@@ -11,8 +11,8 @@ global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION
 NUM_NORMAL_NODES = 15;
 NUM_ATTACK_NODES = 2;
 TOTAL_NODES = NUM_NORMAL_NODES + NUM_ATTACK_NODES;
-MESSAGE_INTERVAL = 15; % seconds
-SIMULATION_TIME = 30 * 60; % 10 minutes in seconds
+MESSAGE_INTERVAL = 60; % seconds
+SIMULATION_TIME = 5 * 60; % 10 minutes in seconds
 TRANSMISSION_RANGE = 50; % meters
 AREA_SIZE = 200; % 200x200 meter area
 
@@ -43,9 +43,9 @@ function node = createAttackerNode(id, x, y)
     node.is_active = true;
     
     % Attacker-specific properties
-    strategies = {'FLOODING', 'ADAPTIVE_FLOODING', 'INJECTION', 'RESOURCE_EXHAUSTION', 'BLACK_HOLE'};
+    strategies = {'FLOODING', 'ADAPTIVE_FLOODING', 'RESOURCE_EXHAUSTION', 'BLACK_HOLE', 'SPOOFING'};
     node.attack_strategy = strategies{randi(length(strategies))};
-    node.attack_frequency = 30 + 30 * rand(); % 30-60 seconds between attacks
+    node.attack_frequency = 10 + 10 * rand(); % 30-60 seconds between attacks
     node.last_attack_time = 0;
     node.target_nodes = [];
     node.message_cache = containers.Map();
@@ -83,7 +83,7 @@ function node = createAdvancedAttackerNode(id, x, y)
     
     % Enhanced attack strategies with specific parameters
     advanced_strategies = {
-        'FLOODING', 'ADAPTIVE_FLOODING', 'INJECTION', 'RESOURCE_EXHAUSTION', 'BLACK_HOLE'
+        'FLOODING', 'ADAPTIVE_FLOODING', 'RESOURCE_EXHAUSTION', 'BLACK_HOLE', 'SPOOFING'
     };
     node.attack_strategy = advanced_strategies{randi(length(advanced_strategies))};
     node.attack_params = struct();
@@ -95,13 +95,13 @@ function node = createAdvancedAttackerNode(id, x, y)
             node.attack_params.flood_pattern = randi([1, 4]);
             node.attack_params.message_burst_size = 5 + randi(10);
             node.attack_params.burst_interval = 20 + randi(40);
-        case 'INJECTION'
-            % No extra params needed for injection
         case 'RESOURCE_EXHAUSTION'
             node.attack_params.target_resource = randi([1, 3]); % Battery, Processing, Memory
             node.attack_params.exhaustion_rate = 0.1 + 0.2 * rand(); % 0.1-0.3 depletion rate
         case 'BLACK_HOLE'
             % No extra params needed for black hole
+        case 'SPOOFING'
+            % No extra params needed for spoofing
     end
     
     % Dynamic attack frequency based on strategy
@@ -109,8 +109,6 @@ function node = createAdvancedAttackerNode(id, x, y)
     switch node.attack_strategy
         case 'ADAPTIVE_FLOODING'
             node.attack_frequency = base_frequency * 0.3; % More frequent
-        case 'TIMING_ATTACK'
-            node.attack_frequency = base_frequency * 2; % Less frequent but targeted
         otherwise
             node.attack_frequency = base_frequency + randi(30);
     end
@@ -190,7 +188,16 @@ function [node, message] = sendMessage(node, content, msg_type, destination_id, 
     message.hop_count = 0;
     message.route_path = {node.id};
     message.size_bytes = length(content);
-message.is_attack = node.is_attacker; % Any message from attacker is an attack    
+        message.is_attack = node.is_attacker; % Any message from attacker is an attack
+        % Add true attack attributes for data collection
+        message.true_is_attack = node.is_attacker;
+        if node.is_attacker && isfield(node, 'attack_strategy') && ~isempty(node.attack_strategy)
+            message.true_attack_type = node.attack_strategy;
+        elseif node.is_attacker
+            message.true_attack_type = 'UNKNOWN_ATTACK';
+        else
+            message.true_attack_type = 'NORMAL';
+        end
     cache_entry = struct();
     cache_entry.message = message;
     cache_entry.cache_time = current_time;
@@ -276,30 +283,12 @@ function rules = createDetectionRules()
     rules.spoofing.sender_reputation_threshold = 0.3;
     rules.spoofing.confidence = 0.85;
     
-    % Rule 3: Injection Detection
-    rules.injection = struct();
-    rules.injection.command_patterns = {'delete', 'drop', 'exec', 'system', 'rm', 'script'};
-    rules.injection.special_char_ratio = 0.3;
-    rules.injection.confidence = 0.95;
-    
-    % Rule 4: Resource Drain Detection
-    rules.resource_drain = struct();
-    rules.resource_drain.message_size_threshold = 800;
-    rules.resource_drain.frequency_threshold = 5;
-    rules.resource_drain.battery_impact_threshold = 0.8;
-    rules.resource_drain.confidence = 0.8;
-    
-    % Rule 5: TTL Manipulation Detection
-    rules.ttl_manipulation = struct();
-    rules.ttl_manipulation.ttl_anomaly_threshold = 0.5;
-    rules.ttl_manipulation.hop_count_inconsistency = 3;
-    rules.ttl_manipulation.confidence = 0.75;
-    
-    % Rule 6: Reputation-based Detection
-    rules.reputation = struct();
-    rules.reputation.low_reputation_threshold = 0.2;
-    rules.reputation.message_similarity_threshold = 0.8;
-    rules.reputation.confidence = 0.7;
+    % Rule 3: Resource Exhaustion Detection (renamed from resource_drain)
+    rules.resource_exhaustion = struct();
+    rules.resource_exhaustion.message_size_threshold = 800;
+    rules.resource_exhaustion.frequency_threshold = 5;
+    rules.resource_exhaustion.battery_impact_threshold = 0.8;
+    rules.resource_exhaustion.confidence = 0.8;
 end
 %Rule-based Detection
 function [rule_result] = runRuleBasedDetection(node, message, sender_node, current_time, features)
@@ -339,48 +328,14 @@ function [rule_result] = runRuleBasedDetection(node, message, sender_node, curre
         fprintf('RULE TRIGGER: Spoofing detected (score=%.2f)\n', spoofing_score);
     end
     
-    % Rule 3: Injection Detection
-    injection_detected = false;
-    content_lower = lower(message.content);
-    for i = 1:length(rules.injection.command_patterns)
-        if contains(content_lower, rules.injection.command_patterns{i})
-            injection_detected = true;
-            break;
-        end
-    end
-    
-    if injection_detected && features(10) > rules.injection.special_char_ratio
-        rule_result.detected_attacks{end+1} = 'INJECTION';
-        rule_result.confidences(end+1) = rules.injection.confidence;
-        rule_result.triggered_rules{end+1} = 'injection_detection';
-        fprintf('RULE TRIGGER: Injection detected (patterns + special chars)\n');
-    end
-    
-    % Rule 4: Resource Drain Detection
-    if features(8) > rules.resource_drain.message_size_threshold && ...
-       features(15) > rules.resource_drain.frequency_threshold && ...
-       features(33) > rules.resource_drain.battery_impact_threshold
-        rule_result.detected_attacks{end+1} = 'RESOURCE_DRAIN';
-        rule_result.confidences(end+1) = rules.resource_drain.confidence;
-        rule_result.triggered_rules{end+1} = 'resource_drain_detection';
-        fprintf('RULE TRIGGER: Resource drain detected\n');
-    end
-    
-    % Rule 5: TTL Manipulation Detection
-    if features(27) > rules.ttl_manipulation.ttl_anomaly_threshold
-        rule_result.detected_attacks{end+1} = 'EXPLOITATION';
-        rule_result.confidences(end+1) = rules.ttl_manipulation.confidence;
-        rule_result.triggered_rules{end+1} = 'ttl_manipulation_detection';
-        fprintf('RULE TRIGGER: TTL manipulation detected\n');
-    end
-    
-    % Rule 6: Reputation-based Detection
-    if features(21) <= rules.reputation.low_reputation_threshold && ...
-       features(22) > rules.reputation.message_similarity_threshold
-        rule_result.detected_attacks{end+1} = 'MISINFORMATION';
-        rule_result.confidences(end+1) = rules.reputation.confidence;
-        rule_result.triggered_rules{end+1} = 'reputation_detection';
-        fprintf('RULE TRIGGER: Low reputation sender detected\n');
+    % Rule 3: Resource Exhaustion Detection
+    if features(8) > rules.resource_exhaustion.message_size_threshold && ...
+       features(15) > rules.resource_exhaustion.frequency_threshold && ...
+       features(33) > rules.resource_exhaustion.battery_impact_threshold
+        rule_result.detected_attacks{end+1} = 'RESOURCE_EXHAUSTION';
+        rule_result.confidences(end+1) = rules.resource_exhaustion.confidence;
+        rule_result.triggered_rules{end+1} = 'resource_exhaustion_detection';
+        fprintf('RULE TRIGGER: Resource exhaustion detected\n');
     end
     
     % Calculate overall rule confidence
@@ -614,17 +569,41 @@ function features = extractMessageFeatures(node, message, sender_node, current_t
     % Resource and context awareness
     features(33) = 1 - node.battery_level; % battery_impact_score
     features(34) = calculateProcessingLoad(node); % processing_load
-    features(35) = 0.4; % memory_footprint (simulated)
+    % Memory footprint: ratio of buffer usage to max buffer size
+    if isempty(node.message_buffer)
+        features(35) = 0;
+    else
+        total_bytes = sum(cellfun(@(msg) length(msg.content), node.message_buffer));
+        features(35) = min(1, total_bytes / node.max_buffer_bytes); % normalized [0,1]
+    end
     features(36) = calculateSignalStrength(node, sender_node); % signal_strength_factor
-    features(37) = 0.6; % mobility_pattern (simulated)
+    % Mobility pattern: normalized distance moved since last message
+    if isfield(node, 'last_position') && ~isempty(node.last_position)
+        dist_moved = norm(node.position - node.last_position);
+        features(37) = min(1, dist_moved / 50); % normalized by max move (e.g., 50m)
+    else
+        features(37) = 0;
+    end
+    node.last_position = node.position;
     features(38) = getEmergencyContextScore(message); % emergency_context_score
     
     % Multi-hop mesh specific
     features(39) = calculateRouteStability(node); % route_stability
-    features(40) = 0.7; % forwarding_behavior (simulated)
+    % Forwarding behavior: ratio of forwarded messages to received messages
+    if isfield(node, 'forwarded_count') && isfield(node, 'received_count') && node.received_count > 0
+        features(40) = min(1, node.forwarded_count / node.received_count);
+    else
+        features(40) = 0;
+    end
     features(41) = calculateNeighborTrustScore(node, message.source_id); % neighbor_trust_score
     features(42) = calculateMeshConnectivityHealth(); % mesh_connectivity_health
-    features(43) = 0.7; % redundancy_factor (simulated)
+    % Redundancy factor: ratio of neighbor overlap with sender
+    if ~isempty(sender_node) && isfield(sender_node, 'neighbors') && ~isempty(node.neighbors)
+        overlap = intersect(node.neighbors, sender_node.neighbors);
+        features(43) = min(1, length(overlap) / max(1, length(node.neighbors)));
+    else
+        features(43) = 0;
+    end
 % --- Helper for mesh connectivity health ---
 function health = calculateMeshConnectivityHealth()
     global simulation_data;
@@ -674,12 +653,24 @@ function exportFeatureDataset()
         fprintf('No feature log to export.\n');
         return;
     end
+    % Deduplicate feature_log by message_id, keeping only the first occurrence
+    [~, unique_idx] = unique({feature_log.message_id}, 'first');
+    dedup_log = feature_log(sort(unique_idx));
     % Convert to table for easy export
-    feature_table = struct2table(feature_log);
-    % Expand features into separate columns
-    features_matrix = vertcat(feature_log.features);
-    for i = 1:43
-        feature_table.(['feature_' num2str(i)]) = features_matrix(:,i);
+    feature_table = struct2table(dedup_log);
+    % Expand features into separate columns with real feature names ONLY
+    features_matrix = vertcat(dedup_log.features);
+    feature_names = { ...
+        'node_density', 'isolation_factor', 'emergency_priority', 'hop_reliability', 'network_fragmentation', 'critical_node_count', 'backup_route_availability', ...
+        'message_length', 'entropy_score', 'special_char_ratio', 'numeric_ratio', 'emergency_keyword_count', 'suspicious_url_count', 'command_pattern_count', ...
+        'message_frequency', 'burst_intensity', 'inter_arrival_variance', 'size_consistency', 'timing_regularity', 'volume_anomaly_score', ...
+        'sender_reputation', 'message_similarity_score', 'response_pattern', 'interaction_diversity', 'temporal_consistency', 'language_consistency', ...
+        'ttl_anomaly', 'sequence_gap_score', 'routing_anomaly', 'header_integrity', 'encryption_consistency', 'protocol_compliance_score', ...
+        'battery_impact_score', 'processing_load', 'memory_footprint', 'signal_strength_factor', 'mobility_pattern', 'emergency_context_score', ...
+        'route_stability', 'forwarding_behavior', 'neighbor_trust_score', 'mesh_connectivity_health', 'redundancy_factor' ...
+    };
+    for i = 1:length(feature_names)
+        feature_table.(feature_names{i}) = features_matrix(:,i);
     end
     feature_table.features = [];
     
@@ -937,17 +928,13 @@ function features = generateFeaturesForClass(class_name)
             features(15) = rand()*100 + 50;     % High message_frequency
             features(21) = rand()*0.2;          % Low sender_reputation
             features(33) = rand()*0.2 + 0.8;    % High battery_impact
-            
         case 'SPOOFING'
             features(13) = randi([1, 5]);       % suspicious_url_count
             features(21) = rand()*0.4;          % Low sender_reputation
             features(10) = rand()*0.5 + 0.3;    % High special_char_ratio
-            
-        case 'INJECTION'
-            features(14) = randi([2, 8]);       % High command_pattern_count
-            features(10) = rand()*0.5 + 0.4;    % High special_char_ratio
-            features(21) = rand()*0.3;          % Very low sender_reputation
-            
+        case 'RESOURCE_EXHAUSTION'
+            features(33) = rand()*0.2 + 0.8;    % High battery_impact
+            features(8) = rand()*500 + 300;     % Large message size
         % Add other cases as needed
     end
 end
@@ -972,30 +959,16 @@ function [is_attack, attack_type, confidence] = simulateDetection(ids_model, fea
         is_attack = true;
         attack_type = 'FLOODING';
         confidence = 0.8 + 0.15 * rand();
-    
     % Spoofing detection (suspicious URLs + low reputation)
     elseif features(13) > 0 && features(21) < 0.5
         is_attack = true;
         attack_type = 'SPOOFING';
         confidence = 0.7 + 0.2 * rand();
-    
-    % Injection detection (command patterns + special characters)
-    elseif features(14) > 0 && features(10) > 0.3
-        is_attack = true;
-        attack_type = 'INJECTION';
-        confidence = 0.75 + 0.2 * rand();
-    
-    % Resource drain detection (high battery impact + large messages)
+    % Resource exhaustion detection (high battery impact + large messages)
     elseif features(33) > 0.8 && features(8) > 300
         is_attack = true;
-        attack_type = 'RESOURCE_DRAIN';
+        attack_type = 'RESOURCE_EXHAUSTION';
         confidence = 0.6 + 0.25 * rand();
-    
-    % General anomaly detection
-    elseif risk_score > 0.7
-        is_attack = true;
-        attack_type = 'EXPLOITATION';
-        confidence = risk_score;
     end
     
     % Add some noise to make it realistic
@@ -1007,12 +980,10 @@ function threat_level = assessThreatLevel(attack_type, confidence)
         threat_level = 0; % NONE
     elseif confidence < 0.5
         threat_level = 1; % LOW
-    elseif (strcmp(attack_type, 'MISINFORMATION') || strcmp(attack_type, 'RESOURCE_DRAIN')) && confidence < 0.8
-        threat_level = 2; % MEDIUM
     elseif (strcmp(attack_type, 'SPOOFING') || strcmp(attack_type, 'FLOODING')) && confidence > 0.7
         threat_level = 3; % HIGH
-    elseif (strcmp(attack_type, 'INJECTION') || strcmp(attack_type, 'EXPLOITATION')) && confidence > 0.6
-        threat_level = 4; % CRITICAL
+    elseif strcmp(attack_type, 'RESOURCE_EXHAUSTION') && confidence > 0.6
+        threat_level = 2; % MEDIUM
     else
         threat_level = 2; % MEDIUM
     end
@@ -1093,12 +1064,12 @@ function content = generateAdvancedAttackContent(node)
             content = generateFloodingContent(node);
         case 'ADAPTIVE_FLOODING'
             content = generateAdaptiveFloodingContent(node);
-        case 'INJECTION'
-            content = generateInjectionContent(node);
         case 'RESOURCE_EXHAUSTION'
             content = generateResourceExhaustionContent(node);
         case 'BLACK_HOLE'
             content = ''; % Black hole does not generate content
+        case 'SPOOFING'
+            content = generateSpoofingContent(node);
         otherwise
             content = generateNormalMessage();
     end
@@ -1108,145 +1079,62 @@ function content = generateFloodingContent(node)
     content = repmat(base_msg, 1, 30 + randi(20));
 end
 
-function content = generateInjectionContent(node)
-    % Injection: suspicious command patterns and special chars
-    patterns = {'delete', 'exec', 'system', 'rm', 'cmd', 'bash', 'sh'};
-    special = '!@#$%^&*()_+';
-    base = 'INJECTION ATTACK: ';
-    pattern = patterns{randi(length(patterns))};
-    content = [base, pattern, ' ', repmat(special, 1, 10 + randi(10))];
-end
-end
-
-
-
-
-
-function content = generateTimingAttackContent(node)
-     timing_attacks = {
-        'DELAY_INJECTION: Introducing 5-second processing delays in all subsequent messages',
-        'SYNC_DISRUPTION: Forcing clock synchronization errors across network nodes',
-        'PEAK_OVERLOAD: Maximizing message transmission during high-traffic periods',
-        'RESPONSE_DELAY: {"command": "sleep(10)", "target": "all_emergency_responses"}',
-        'TIMEOUT_EXPLOIT: Extending message timeouts to create network congestion'
-    };
-    
-    base_attack = timing_attacks{randi(length(timing_attacks))};
-    
-    % Disguise as legitimate timing coordination
-    disguises = {
-        'TIME_SYNC: %s',
-        'COORDINATION_UPDATE: %s',
-        'SCHEDULING_ALERT: %s',
-        'TIMING_CRITICAL: %s'
-    };
-    disguise = disguises{randi(length(disguises))};
-    content = sprintf(disguise, base_attack);
-end
-
-
-
-function content = generateMisinformationContent(node)
-    % Check if attack_params exists and has disinformation_type
-    if isfield(node.attack_params, 'disinformation_type')
-        dis_type = node.attack_params.disinformation_type;
-    else
-        dis_type = randi([1, 4]); % Default random type
-    end
-    
-    switch dis_type
-        case 1 % False evacuation orders
-            false_orders = {
-                'FAKE ALERT: Evacuation cancelled, return to your homes immediately!',
-                'FALSE ORDER: New evacuation to dangerous zone - avoid City Hall area!',
-                'BOGUS NOTICE: Shelters are full, stay in your homes instead!',
-                'WRONG INFO: Safe zone compromised, evacuate to remote forest area!'
-            };
-            content = false_orders{randi(length(false_orders))};
-            
-        case 2 % Panic-inducing false information
-            panic_messages = {
-                'BREAKING: Second disaster incoming in 1 hour - run for your lives!',
-                'URGENT: Disease outbreak at all shelters - avoid rescue centers!',
-                'CRITICAL: Nuclear plant meltdown confirmed - radiation spreading!',
-                'EMERGENCY: Dams failing across region - massive flooding in 30 minutes!'
-            };
-            content = panic_messages{randi(length(panic_messages))};
-            
-        case 3 % False safety information
-            false_safety = {
-                'ALL CLEAR: Disaster over, emergency services no longer needed',
-                'SAFE ZONE: Downtown area is now completely safe to return',
-                'NO DANGER: Flooding has stopped, all roads are now passable',
-                'SITUATION NORMAL: Power restored everywhere, life back to normal'
-            };
-            content = false_safety{randi(length(false_safety))};
-            
-        case 4 % Resource hoarding encouragement
-            hoarding_messages = {
-                'INSIDER TIP: No aid coming, hoard all food and water you can find!',
-                'SECRET: Government keeping supplies for themselves, take everything!',
-                'WARNING: Aid trucks being robbed, grab supplies before others do!',
-                'URGENT: Supplies running out permanently, stockpile everything now!'
-            };
-            content = hoarding_messages{randi(length(hoarding_messages))};
-    end
-end
 
 function content = generateAdaptiveFloodingContent(node)
-    if isfield(node.attack_params, 'flood_pattern')
-        pattern = node.attack_params.flood_pattern;
-    else
-        pattern = randi([1, 4]); % Default random pattern
+    % Adaptive flooding: send a burst of messages with variable size and timing
+    base_msg = 'ADAPTIVE FLOOD ALERT: WATER LEVELS RISING! ';
+    burst_size = 10 + randi(10); % Adaptive burst size
+    if isfield(node, 'attack_params') && isfield(node.attack_params, 'message_burst_size')
+        burst_size = node.attack_params.message_burst_size;
     end
-    
-    switch pattern
-        case 1 % False emergency flooding
-            base_msg = 'EMERGENCY ALERT: ';
-            fake_emergency = 'IMMEDIATE EVACUATION REQUIRED';
-            padding = repmat('!!! URGENT !!! ', 1, 20 + randi(30));
-            content = [base_msg, fake_emergency, ' ', padding];
-            
-        case 2 % Panic message flooding
-            panic_msg = 'EVERYONE IS GOING TO DIE! RUN! SAVE YOURSELVES! ';
-            content = repmat(panic_msg, 1, 10 + randi(15));
-            
-        case 3 % Resource competition flooding
-            competition_msg = 'SUPPLIES AT WALMART! FIRST COME FIRST SERVE! RUN NOW! ';
-            content = repmat(competition_msg, 1, 8 + randi(12));
-            
-        case 4 % Communication jamming
-            jam_msg = 'SYSTEM ERROR SYSTEM ERROR NETWORK COMPROMISED ';
-            content = repmat(jam_msg, 1, 15 + randi(25));
+    content = repmat(base_msg, 1, burst_size);
+    % Optionally, add some randomization to simulate adaptation
+    if rand() > 0.5
+        content = [content, sprintf(' [ADAPTIVE BURST at %.2f]', now)];
     end
 end
 
 function content = generateResourceExhaustionContent(node)
-     % Check if attack_params exists and has target_resource
-    if isfield(node.attack_params, 'target_resource')
-        target = node.attack_params.target_resource;
+    % Resource exhaustion: send a very large message to drain resources
+    base_msg = 'RESOURCE EXHAUSTION ATTACK: '; 
+    if isfield(node, 'attack_params') && isfield(node.attack_params, 'target_resource')
+        switch node.attack_params.target_resource
+            case 1 % Battery
+                payload = repmat('BATTERY_DRAIN_', 1, 200 + randi(100));
+            case 2 % Processing
+                payload = repmat('PROCESSING_OVERLOAD_', 1, 150 + randi(50));
+            case 3 % Memory
+                payload = repmat('MEMORY_BOMB_', 1, 300 + randi(100));
+            otherwise
+                payload = repmat('GENERIC_RESOURCE_DRAIN_', 1, 100);
+        end
     else
-        target = randi([1, 3]); % Default random target
+        payload = repmat('GENERIC_RESOURCE_DRAIN_', 1, 100);
     end
-    
-    switch target
-        case 1 % Battery drain during critical time
-            content = [repmat('BATTERY_DRAIN_ATTACK_', 1, 100), ...
-                      'FORCING_HIGH_POWER_CONSUMPTION_', ...
-                      repmat('EMERGENCY_POWER_KILL_', 1, 50)];
-                      
-        case 2 % Network congestion during emergencies
-            complex_data = '';
-            for i = 1:200
-                complex_data = [complex_data, sprintf('NETWORK_SPAM_%d_', i)];
-            end
-            content = ['NETWORK_OVERLOAD_ATTACK: ', complex_data];
-            
-        case 3 % Memory exhaustion when storage needed for emergency info
-            memory_bomb = repmat('MEMORY_ATTACK_BLOCK_', 1, 150);
-            content = ['STORAGE_KILLER: ', memory_bomb, 'DELETE_EMERGENCY_MESSAGES'];
-    end
+    content = [base_msg, payload];
 end
+
+
+function content = generateSpoofingContent(node)
+    % Spoofing: create messages with suspicious URLs and low reputation cues
+    spoof_msgs = {
+        'URGENT: Click http://malicious-site.com for rescue instructions!',
+        'EMERGENCY: Visit www.fakehelp.org for updates!',
+        'ALERT: Secure your account at http://phishingsite.com now!',
+        'HELP: Go to www.spoofedsite.com for evacuation details!'
+    };
+    content = spoof_msgs{randi(length(spoof_msgs))};
+end
+end
+
+
+
+
+
+
+
+
+
 
 
 function content = generateNormalMessage()
@@ -1400,25 +1288,64 @@ function updateStatistics(current_time)
     time_window = 600; % 10 minutes
     start_time = max(0, current_time - time_window);
     
-    % Filter messages and detections within time window
-    recent_messages = simulation_data.messages([simulation_data.messages.timestamp] >= start_time);
-    recent_detections = simulation_data.detections([simulation_data.detections.timestamp] >= start_time);
+    % Filter messages and detections within time window, robust to missing timestamp fields
+    messages = simulation_data.messages;
+    if isempty(messages)
+        recent_messages = messages;
+    else
+        has_timestamp = arrayfun(@(m) isfield(m, 'timestamp'), messages);
+        messages_with_time = messages(has_timestamp);
+        recent_messages = messages_with_time([messages_with_time.timestamp] >= start_time);
+    end
+    detections = simulation_data.detections;
+    if isempty(detections)
+        recent_detections = detections;
+    else
+        has_timestamp = arrayfun(@(d) isfield(d, 'timestamp'), detections);
+        detections_with_time = detections(has_timestamp);
+        recent_detections = detections_with_time([detections_with_time.timestamp] >= start_time);
+    end
     
     % Calculate statistics
     stats = struct();
     stats.current_time = current_time;
     stats.total_messages = length(recent_messages);
-    stats.attack_messages = sum([recent_messages.is_attack]);
-    stats.normal_messages = stats.total_messages - stats.attack_messages;
+    % Only include messages with is_attack field
+    if isempty(recent_messages)
+        stats.attack_messages = 0;
+        stats.normal_messages = 0;
+    else
+        has_is_attack = arrayfun(@(m) isfield(m, 'is_attack'), recent_messages);
+        messages_with_attack = recent_messages(has_is_attack);
+        stats.attack_messages = sum([messages_with_attack.is_attack]);
+        stats.normal_messages = length(messages_with_attack) - stats.attack_messages;
+    end
     stats.total_detections = length(recent_detections);
-    stats.attacks_detected = sum([recent_detections.is_attack]);
+    % Only include detections with is_attack field
+    if isempty(recent_detections)
+        stats.attacks_detected = 0;
+    else
+        has_is_attack_det = arrayfun(@(d) isfield(d, 'is_attack'), recent_detections);
+        detections_with_attack = recent_detections(has_is_attack_det);
+        stats.attacks_detected = sum([detections_with_attack.is_attack]);
+    end
     stats.detection_rate = stats.attacks_detected / max(stats.attack_messages, 1);
     
     % Calculate per-attack-type statistics
-    attack_types = {'FLOODING', 'SPOOFING', 'INJECTION', 'EXPLOITATION', 'MISINFORMATION', 'RESOURCE_DRAIN'};
+    attack_types = {'FLOODING', 'ADAPTIVE_FLOODING', 'BLACK_HOLE', 'SPOOFING', 'RESOURCE_EXHAUSTION'};
     for i = 1:length(attack_types)
-        type_detections = recent_detections(strcmp({recent_detections.attack_type}, attack_types{i}));
-        stats.(sprintf('%s_detected', lower(attack_types{i}))) = length(type_detections);
+        if isempty(recent_detections)
+            stats.(sprintf('%s_detected', lower(attack_types{i}))) = 0;
+        else
+            has_attack_type = arrayfun(@(d) isfield(d, 'attack_type'), recent_detections);
+            detections_with_type = recent_detections(has_attack_type);
+            if isempty(detections_with_type)
+                stats.(sprintf('%s_detected', lower(attack_types{i}))) = 0;
+            else
+                type_detections = detections_with_type(strcmp({detections_with_type.attack_type}, attack_types{i}));
+                stats.(sprintf('%s_detected', lower(attack_types{i}))) = length(type_detections);
+            end
+        end
     end
     
     % Calculate average confidence and processing time
@@ -1449,7 +1376,7 @@ function displayStatistics(stats)
     end
     
     fprintf('\n--- Attack Type Breakdown ---\n');
-    attack_types = {'flooding', 'spoofing', 'injection', 'exploitation', 'misinformation', 'resource_drain'};
+    attack_types = {'flooding', 'adaptive_flooding', 'black_hole', 'spoofing', 'resource_exhaustion'};
     for i = 1:length(attack_types)
         field_name = sprintf('%s_detected', attack_types{i});
         if isfield(stats, field_name)
@@ -1816,8 +1743,7 @@ end
 function shared_model = createSharedIDSModel()
     shared_model = struct();
     shared_model.model_loaded = false;
-    shared_model.attack_types = {'NORMAL', 'FLOODING', 'SPOOFING', 'INJECTION', ...
-                                'EXPLOITATION', 'MISINFORMATION', 'RESOURCE_DRAIN'};
+    shared_model.attack_types = {'NORMAL', 'FLOODING', 'ADAPTIVE_FLOODING', 'BLACK_HOLE', 'SPOOFING', 'RESOURCE_EXHAUSTION'};
     
     shared_model.feature_weights = rand(43, 1);
     shared_model.rules = createDetectionRules();
