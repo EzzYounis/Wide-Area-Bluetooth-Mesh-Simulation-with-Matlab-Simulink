@@ -13,7 +13,7 @@ NUM_ATTACK_NODES = 6;
 TOTAL_NODES = NUM_NORMAL_NODES + NUM_ATTACK_NODES;
 MESSAGE_INTERVAL = 10; % seconds - REDUCED from 60 to generate more messages
 SIMULATION_TIME = 2 * 60; % 2 minutes for testing enhanced feature logging
-TRANSMISSION_RANGE = 50; % meters
+TRANSMISSION_RANGE = 50; % meterss
 AREA_SIZE = 400; % 200x200 meter area
 
 %% Initialize Global Variables
@@ -2219,6 +2219,14 @@ function runBluetoothMeshSimulation()
                                             forwarded_msg = cache_entry.message;
                                             forwarded_msg.hop_count = forwarded_msg.hop_count + 1;
                                             forwarded_msg.ttl = forwarded_msg.ttl - 1;
+                                            
+                                            % Check TTL and maximum hop count limits
+                                            MAX_HOP_COUNT = 10; % Maximum allowed hops in mesh network
+                                            if forwarded_msg.ttl <= 0 || forwarded_msg.hop_count > MAX_HOP_COUNT
+                                                fprintf('Message %s dropped: TTL=%d, hops=%d (max_hops=%d)\n', ...
+                                                    msg_id, forwarded_msg.ttl, forwarded_msg.hop_count, MAX_HOP_COUNT);
+                                                continue; % Skip forwarding this message
+                                            end
             
                                             if neighbor_id ~= forwarded_msg.source_id
                                                 [nodes(neighbor_idx), detection_result] = receiveMessage(nodes(neighbor_idx), forwarded_msg, current_time, nodes(i));
