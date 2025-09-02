@@ -8,13 +8,13 @@ clear all; close all; clc;
 
 %% Simulation Parameters
 global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE ;
-NUM_NORMAL_NODES = 15;
-NUM_ATTACK_NODES = 2;
+NUM_NORMAL_NODES = 35;
+NUM_ATTACK_NODES = 6;
 TOTAL_NODES = NUM_NORMAL_NODES + NUM_ATTACK_NODES;
 MESSAGE_INTERVAL = 10; % seconds - REDUCED from 60 to generate more messages
-SIMULATION_TIME = 20 * 60; % 2 minutes for testing enhanced feature logging
+SIMULATION_TIME = 2 * 60; % 2 minutes for testing enhanced feature logging
 TRANSMISSION_RANGE = 50; % meters
-AREA_SIZE = 200; % 200x200 meter area
+AREA_SIZE = 400; % 200x200 meter area
 
 %% Initialize Global Variables
 global simulation_data;
@@ -78,6 +78,12 @@ function node = createNormalNode(id, x, y)
     node.attack_strategy = '';  % Empty for normal nodes
     node.attack_frequency = 0;  % 0 for normal nodes
     node.last_attack_time = 0;
+    
+    % Initialize tracking fields for dynamic features
+    node.forwarded_count = 0;
+    node.received_count = 0;
+    node.last_position = [x, y]; % Initialize with current position
+    node.total_distance_moved = 0; % Track cumulative movement
     node.target_nodes = [];
     node.message_cache = containers.Map();
     node.cache_duration = 20;
@@ -444,8 +450,10 @@ function logFeatureData(message, current_time, receiver_node, sender_node)
     log_entry.destination_id = message.destination_id;
     log_entry.is_attack = message.is_attack;
     
-    % Determine true attack type based on sender node's attack strategy
-    if message.is_attack && ~isempty(sender_node) && sender_node.is_attacker
+    % Use message's true attack type if available, otherwise fallback to sender node
+    if isfield(message, 'true_attack_type') && ~isempty(message.true_attack_type)
+        log_entry.attack_type = message.true_attack_type;
+    elseif message.is_attack && ~isempty(sender_node) && sender_node.is_attacker
         % Use sender node's attack strategy as the true attack type
         if isfield(sender_node, 'attack_strategy') && ~isempty(sender_node.attack_strategy)
             log_entry.attack_type = sender_node.attack_strategy;
@@ -560,11 +568,11 @@ function features = extractMessageFeatures(node, message, sender_node, current_t
     features(3) = getEmergencyPriority(message); % emergency_priority
     features(4) = calculateHopReliability(message); % hop_reliability
     features(5) = 0.2; % network_fragmentation (simulated)
-    features(6) = length(node.neighbors); % critical_node_count
+    features(6) = min(1, length(node.neighbors) / 10); % critical_node_count (normalized by expected max neighbors)
     features(7) = 0.7; % backup_route_availability (simulated)
     
     % Message content analysis
-    features(8) = length(message.content); % message_length
+    features(8) = min(1, length(message.content) / 2000); % message_length (normalized by max expected 2000 chars)
     features(9) = calculateEntropy(message.content); % entropy_score
     features(10) = calculateSpecialCharRatio(message.content); % special_char_ratio
     features(11) = calculateNumericRatio(message.content); % numeric_ratio
@@ -758,8 +766,9 @@ function entropy = calculateEntropy(text)
     [unique_chars, ~, idx] = unique(text);
     counts = accumarray(idx, 1);
     probabilities = counts / length(text);
-    entropy = -sum(probabilities .* log2(probabilities + eps));
-    entropy = min(entropy, 8.0); % Cap at 8 bits
+    raw_entropy = -sum(probabilities .* log2(probabilities + eps));
+    % Normalize by maximum possible entropy (8 bits for 256 possible characters)
+    entropy = min(1, raw_entropy / 8.0);
 end
 
 function ratio = calculateSpecialCharRatio(text)
@@ -796,12 +805,14 @@ function count = countEmergencyKeywords(text)
                          'missing', 'found', 'safe', 'danger', 'critical', 'alert', ...
                          'breaking', 'immediate', 'disaster', 'crisis', 'victim', 'survivor'};
     text_lower = lower(text);
-    count = 0;
+    raw_count = 0;
     for i = 1:length(emergency_keywords)
         if contains(text_lower, emergency_keywords{i})
-            count = count + 1;
+            raw_count = raw_count + 1;
         end
     end
+    % Normalize by maximum possible keywords (assume max 5 keywords per message is high)
+    count = min(1, raw_count / 5);
 end
 
 function count = countSuspiciousURLs(text)
@@ -832,7 +843,7 @@ function count = countCommandPatterns(text)
 end
 
 function freq = calculateMessageFrequency(node, current_time)
-    % Calculate message frequency in the last minute
+    % Calculate message frequency in the last minute, normalized to [0,1]
     recent_messages = 0;
     lookback_time = 60; % seconds
     
@@ -842,7 +853,9 @@ function freq = calculateMessageFrequency(node, current_time)
         end
     end
     
-    freq = recent_messages / (lookback_time / 60); % messages per minute
+    messages_per_minute = recent_messages / (lookback_time / 60);
+    % Normalize by expected maximum frequency (assume max 30 messages/minute in high traffic)
+    freq = min(1, messages_per_minute / 30);
 end
 
 function reputation = getSenderReputation(node, sender_id)
@@ -2109,8 +2122,8 @@ function runBluetoothMeshSimulation()
             active_normal_indices = find(~[nodes.is_attacker] & [nodes.is_active]);
             
             if ~isempty(active_normal_indices)
-                % Generate 2-4 messages per interval for more realistic traffic
-                num_messages = 2 + randi(3); % 2 to 4 messages
+                % Generate 1-2 messages per interval for faster testing
+                num_messages = 1 + randi(2); % 1 to 2 messages
                 
                 for msg_count = 1:num_messages
                     % Randomly select a node to send a message
@@ -2210,6 +2223,16 @@ function runBluetoothMeshSimulation()
                                             if neighbor_id ~= forwarded_msg.source_id
                                                 [nodes(neighbor_idx), detection_result] = receiveMessage(nodes(neighbor_idx), forwarded_msg, current_time, nodes(i));
                                                 
+                                                % Increment forwarded count for the forwarding node
+                                                if isfield(nodes(i), 'forwarded_count')
+                                                    nodes(i).forwarded_count = nodes(i).forwarded_count + 1;
+                                                else
+                                                    nodes(i).forwarded_count = 1;
+                                                end
+                                                
+                                                % Update feature log for this forwarding node to reflect current forwarding behavior
+                                                updateForwardingBehaviorInLog(nodes(i), current_time);
+                                                
                                                 % Mark as forwarded to this neighbor
                                                 cache_entry.forwarded_to(end+1) = neighbor_id;
                                                 nodes(i).message_cache(msg_id) = cache_entry;
@@ -2217,8 +2240,8 @@ function runBluetoothMeshSimulation()
                                                 % Also log features for forwarded messages from sender perspective
                                                 logFeatureData(forwarded_msg, current_time, nodes(i), []);
                                                 
-                                                fprintf('Node %d forwarded cached message %s to Node %d\n', ...
-                                                    nodes(i).id, msg_id, neighbor_id);
+                                                fprintf('Node %d forwarded cached message %s to Node %d (forwarded_count: %d)\n', ...
+                                                    nodes(i).id, msg_id, neighbor_id, nodes(i).forwarded_count);
                                             else
                                                 fprintf('Prevented forwarding message %s back to source Node %d\n', ...
                                                     msg_id, neighbor_id);
@@ -2322,3 +2345,27 @@ runBluetoothMeshSimulation();
 
 fprintf('\nSimulation completed successfully!\n');
 fprintf('Check the simulation_results folder for detailed output files.\n');
+
+function updateForwardingBehaviorInLog(node, current_time)
+    % Update forwarding_behavior in feature_log for recent entries from this node
+    global feature_log;
+    if isempty(feature_log)
+        return;
+    end
+    
+    % Calculate current forwarding behavior
+    if isfield(node, 'forwarded_count') && isfield(node, 'received_count') && node.received_count > 0
+        current_fwd_behavior = min(1, node.forwarded_count / node.received_count);
+    else
+        current_fwd_behavior = 0;
+    end
+    
+    % Update recent entries (within last 30 seconds) from this node
+    time_window = 30;
+    for i = 1:length(feature_log)
+        if feature_log(i).source_id == node.id && ...
+           (current_time - feature_log(i).timestamp) <= time_window
+            feature_log(i).features(40) = current_fwd_behavior;
+        end
+    end
+end
