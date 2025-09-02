@@ -11,8 +11,8 @@ global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION
 NUM_NORMAL_NODES = 15;
 NUM_ATTACK_NODES = 2;
 TOTAL_NODES = NUM_NORMAL_NODES + NUM_ATTACK_NODES;
-MESSAGE_INTERVAL = 60; % seconds
-SIMULATION_TIME = 5 * 60; % 10 minutes in seconds
+MESSAGE_INTERVAL = 10; % seconds - REDUCED from 60 to generate more messages
+SIMULATION_TIME = 20 * 60; % 2 minutes for testing enhanced feature logging
 TRANSMISSION_RANGE = 50; % meters
 AREA_SIZE = 200; % 200x200 meter area
 
@@ -45,12 +45,18 @@ function node = createAttackerNode(id, x, y)
     % Attacker-specific properties
     strategies = {'FLOODING', 'ADAPTIVE_FLOODING', 'RESOURCE_EXHAUSTION', 'BLACK_HOLE', 'SPOOFING'};
     node.attack_strategy = strategies{randi(length(strategies))};
-    node.attack_frequency = 10 + 10 * rand(); % 30-60 seconds between attacks
+    node.attack_frequency = 5 + 5 * rand(); % REDUCED: 5-10 seconds between attacks
     node.last_attack_time = 0;
     node.target_nodes = [];
     node.message_cache = containers.Map();
     node.cache_duration = 20;
     node.attack_params = struct(); % Will be populated by advanced attacker function
+    
+    % Initialize tracking fields for dynamic features
+    node.forwarded_count = 0;
+    node.received_count = 0;
+    node.last_position = [x, y]; % Initialize with current position
+    node.total_distance_moved = 0; % Track cumulative movement
 end
 
 function node = createNormalNode(id, x, y)
@@ -76,6 +82,12 @@ function node = createNormalNode(id, x, y)
     node.message_cache = containers.Map();
     node.cache_duration = 20;
     node.attack_params = struct(); % Empty struct for normal nodes
+    
+    % Initialize tracking fields for dynamic features
+    node.forwarded_count = 0;
+    node.received_count = 0;
+    node.last_position = [x, y]; % Initialize with current position
+    node.total_distance_moved = 0; % Track cumulative movement
 end
 
 function node = createAdvancedAttackerNode(id, x, y)
@@ -105,12 +117,12 @@ function node = createAdvancedAttackerNode(id, x, y)
     end
     
     % Dynamic attack frequency based on strategy
-    base_frequency = 30;
+    base_frequency = 8; % REDUCED from 30 to 8 seconds
     switch node.attack_strategy
         case 'ADAPTIVE_FLOODING'
-            node.attack_frequency = base_frequency * 0.3; % More frequent
+            node.attack_frequency = base_frequency * 0.3; % More frequent (2-3 seconds)
         otherwise
-            node.attack_frequency = base_frequency + randi(30);
+            node.attack_frequency = base_frequency + randi(10); % 8-18 seconds
     end
 end
 
@@ -256,10 +268,18 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
     node.message_buffer{end+1} = message;
     node.message_history{end+1} = message;
 
+    % Update received count for forwarding behavior tracking
+    node.received_count = node.received_count + 1;
+
     % If not attacker, run IDS detection
     if ~node.is_attacker
         [node, detection_result] = runIDSDetection(node, message, sender_node, current_time);
         logMessageDetails(message, detection_result, node, current_time);
+    else
+        % Even attackers should log received messages for completeness
+        logMessageDetails(message, [], node, current_time);
+        % Also log features for messages received by attackers
+        logFeatureData(message, current_time, node, sender_node);
     end
 
     % Consume battery
@@ -409,14 +429,14 @@ function [final_result] = fuseDetectionResults(rule_result, ai_result, fusion_we
     final_result.ai_detection = ai_result;
 end
 
-function [node, detection_result] = runIDSDetection(node, message, sender_node, current_time)
-    start_time = tic;
-    
-    % Extract features for IDS
-    features = extractMessageFeatures(node, message, sender_node, current_time);
-
-    % Log features and label for dataset preparation
+function logFeatureData(message, current_time, receiver_node, sender_node)
+    % Separate function to log feature data for ALL messages
     global feature_log;
+    
+    % Extract features using receiver node context
+    features = extractMessageFeatures(receiver_node, message, sender_node, current_time);
+    
+    % Create feature log entry
     log_entry = struct();
     log_entry.message_id = message.id;
     log_entry.timestamp = current_time;
@@ -442,6 +462,16 @@ function [node, detection_result] = runIDSDetection(node, message, sender_node, 
     else
         feature_log(end+1) = log_entry;
     end
+end
+
+function [node, detection_result] = runIDSDetection(node, message, sender_node, current_time)
+    start_time = tic;
+    
+    % Extract features for IDS
+    features = extractMessageFeatures(node, message, sender_node, current_time);
+
+    % Log features and label for dataset preparation - MOVED TO SEPARATE FUNCTION
+    logFeatureData(message, current_time, node, sender_node);
     
     % NEW: Run both rule-based and AI-based detection
     if node.ids_model.hybrid_mode
@@ -577,14 +607,13 @@ function features = extractMessageFeatures(node, message, sender_node, current_t
         features(35) = min(1, total_bytes / node.max_buffer_bytes); % normalized [0,1]
     end
     features(36) = calculateSignalStrength(node, sender_node); % signal_strength_factor
-    % Mobility pattern: normalized distance moved since last message
-    if isfield(node, 'last_position') && ~isempty(node.last_position)
-        dist_moved = norm(node.position - node.last_position);
-        features(37) = min(1, dist_moved / 50); % normalized by max move (e.g., 50m)
+    % Mobility pattern: normalized cumulative distance moved
+    if isfield(node, 'total_distance_moved')
+        features(37) = min(1, node.total_distance_moved / 200); % normalized by max expected movement (200m)
     else
         features(37) = 0;
+        node.total_distance_moved = 0; % Initialize if missing
     end
-    node.last_position = node.position;
     features(38) = getEmergencyContextScore(message); % emergency_context_score
     
     % Multi-hop mesh specific
@@ -1029,7 +1058,9 @@ function node = processDetectionResult(node, detection_result, original_message)
 end
 
 %% Attacker Functions
-function node = launchAttack(node, current_time, target_nodes)
+function [node, attack_message] = launchAttack(node, current_time, target_nodes)
+    attack_message = []; % Initialize return value
+    
     if current_time - node.last_attack_time < node.attack_frequency
         return;
     end
@@ -1049,8 +1080,8 @@ function node = launchAttack(node, current_time, target_nodes)
     fprintf('ATTACKER Node %d launching %s attack at time %.2f\n', ...
         node.id, node.attack_strategy, current_time);
     
-    % Send attack message
-    message = sendMessage(node, attack_content, 'DATA', target_id, current_time);
+    % Send attack message and capture the returned message
+    [node, attack_message] = sendMessage(node, attack_content, 'ATTACK', target_id, current_time);
 end
 
 function content = generateAdvancedAttackContent(node)
@@ -1797,6 +1828,9 @@ function node = forwardCachedMessages(node, current_time)
                     cache_entry.forwarded_to(end+1) = neighbor_id;
                     node.message_cache(msg_id) = cache_entry;
                     
+                    % Update forwarded count for forwarding behavior tracking
+                    node.forwarded_count = node.forwarded_count + 1;
+                    
                     % Simulate forwarding (will be handled in main loop)
                 end
             end
@@ -1854,13 +1888,25 @@ function logMessageDetails(message, detection_result, node, current_time)
             log_entry.rule_triggered = detection_result.rule_triggered;
             log_entry.rule_confidence = detection_result.rule_confidence;
             log_entry.ai_confidence = detection_result.ai_confidence;
+        else
+            % Ensure fields exist even if not hybrid detection
+            log_entry.fusion_method = 'NOT_AVAILABLE';
+            log_entry.rule_triggered = false;
+            log_entry.rule_confidence = 0;
+            log_entry.ai_confidence = 0;
         end
     else
+        % No detection performed (e.g., message sent from sender node)
         log_entry.detected_as_attack = false;
-        log_entry.detected_attack_type = 'NONE';
+        log_entry.detected_attack_type = 'NOT_ANALYZED';
         log_entry.detection_confidence = 0;
         log_entry.threat_level = 0;
         log_entry.processing_time_ms = 0;
+        % Ensure hybrid fields exist for consistency
+        log_entry.fusion_method = 'NOT_ANALYZED';
+        log_entry.rule_triggered = false;
+        log_entry.rule_confidence = 0;
+        log_entry.ai_confidence = 0;
     end
     
     % Performance metrics
@@ -1869,10 +1915,43 @@ function logMessageDetails(message, detection_result, node, current_time)
     log_entry.false_positive = ~log_entry.is_attack && log_entry.detected_as_attack;
     log_entry.false_negative = log_entry.is_attack && ~log_entry.detected_as_attack;
     
-    % Add to log
+    % Add to log using safer approach
     if isempty(message_log)
         message_log = log_entry;
     else
+        % Check if structures match, if not, add missing fields
+        existing_fields = fieldnames(message_log);
+        new_fields = fieldnames(log_entry);
+        
+        % Add missing fields to existing log entries
+        missing_in_existing = setdiff(new_fields, existing_fields);
+        for i = 1:length(missing_in_existing)
+            field_name = missing_in_existing{i};
+            % Add default values based on field type
+            if strcmp(field_name, 'fusion_method') || strcmp(field_name, 'detected_attack_type')
+                [message_log.(field_name)] = deal('MISSING');
+            elseif strcmp(field_name, 'rule_triggered')
+                [message_log.(field_name)] = deal(false);
+            else
+                [message_log.(field_name)] = deal(0);
+            end
+        end
+        
+        % Add missing fields to new log entry
+        missing_in_new = setdiff(existing_fields, new_fields);
+        for i = 1:length(missing_in_new)
+            field_name = missing_in_new{i};
+            % Add default values based on field type
+            if strcmp(field_name, 'fusion_method') || strcmp(field_name, 'detected_attack_type')
+                log_entry.(field_name) = 'MISSING';
+            elseif strcmp(field_name, 'rule_triggered')
+                log_entry.(field_name) = false;
+            else
+                log_entry.(field_name) = 0;
+            end
+        end
+        
+        % Now safely append
         message_log(end+1) = log_entry;
     end
 end
@@ -1913,7 +1992,9 @@ function runBluetoothMeshSimulation()
     global simulation_data;
     global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE ;
     global feature_log;
+    global message_log; % Add global declaration for message_log
     
+    % Initialize message_log as empty struct array
     message_log = struct([]);
 
     fprintf('Starting Bluetooth Mesh Network IDS Simulation...\n');
@@ -1991,8 +2072,17 @@ function runBluetoothMeshSimulation()
                 end
                 fprintf('\n');
                 move_idx = movable_indices(randi(length(movable_indices)));
+                % Calculate distance moved for tracking
+                old_position = nodes(move_idx).position;
                 % Move to a new random position within area
                 nodes(move_idx).position = [AREA_SIZE*rand(), AREA_SIZE*rand()];
+                % Update cumulative distance moved
+                if isfield(nodes(move_idx), 'total_distance_moved')
+                    distance_moved = norm(nodes(move_idx).position - old_position);
+                    nodes(move_idx).total_distance_moved = nodes(move_idx).total_distance_moved + distance_moved;
+                else
+                    nodes(move_idx).total_distance_moved = 0; % Initialize if missing
+                end
                 % Update neighbors for this node and all others
                 for j = 1:length(nodes)
                     nodes(j) = updateNeighbors(nodes(j), nodes, TRANSMISSION_RANGE);
@@ -2015,24 +2105,44 @@ function runBluetoothMeshSimulation()
         % Generate messages every MESSAGE_INTERVAL seconds
         if current_time - last_message_time >= MESSAGE_INTERVAL
             
-            % NEW: Only ONE message every 15 seconds across entire network
+            % ENHANCED: Generate multiple messages per interval to increase activity
             active_normal_indices = find(~[nodes.is_attacker] & [nodes.is_active]);
             
             if ~isempty(active_normal_indices)
-                % Randomly select ONE node to send a message
-                sender_idx = active_normal_indices(randi(length(active_normal_indices)));
+                % Generate 2-4 messages per interval for more realistic traffic
+                num_messages = 2 + randi(3); % 2 to 4 messages
                 
-                % Choose message type randomly
-                if rand() < 0.8  % 80% chance for data message
-                    content = generateNormalMessage();
-                    destination = randi(NUM_NORMAL_NODES);
-                    if destination ~= nodes(sender_idx).id
-                        message = sendMessage(nodes(sender_idx), content, 'DATA', destination, current_time);
-                        fprintf('Network message: Node %d sent data message\n', nodes(sender_idx).id);
+                for msg_count = 1:num_messages
+                    % Randomly select a node to send a message
+                    sender_idx = active_normal_indices(randi(length(active_normal_indices)));
+                    
+                    % Choose message type randomly
+                    if rand() < 0.8  % 80% chance for data message
+                        content = generateNormalMessage();
+                        destination = randi(NUM_NORMAL_NODES);
+                        if destination ~= nodes(sender_idx).id
+                            [nodes(sender_idx), message] = sendMessage(nodes(sender_idx), content, 'DATA', destination, current_time);
+                            if ~isempty(message)
+                                % Log ALL messages, not just detected ones
+                                logMessageDetails(message, [], nodes(sender_idx), current_time);
+                                % Also log features for sent messages
+                                logFeatureData(message, current_time, nodes(sender_idx), []);
+                                fprintf('Network message: Node %d sent data message %s\n', nodes(sender_idx).id, message.id);
+                            end
+                        end
+                    else  % 20% chance for heartbeat
+                        [nodes(sender_idx), message] = sendMessage(nodes(sender_idx), 'HEARTBEAT', 'HEARTBEAT', 0, current_time);
+                        if ~isempty(message)
+                            % Log ALL messages, not just detected ones
+                            logMessageDetails(message, [], nodes(sender_idx), current_time);
+                            % Also log features for sent messages
+                            logFeatureData(message, current_time, nodes(sender_idx), []);
+                            fprintf('Network message: Node %d sent heartbeat %s\n', nodes(sender_idx).id, message.id);
+                        end
                     end
-                else  % 20% chance for heartbeat
-                    message = sendMessage(nodes(sender_idx), 'HEARTBEAT', 'HEARTBEAT', 0, current_time);
-                    fprintf('Network message: Node %d sent heartbeat\n', nodes(sender_idx).id);
+                    
+                    % Small delay between messages in the same interval
+                    pause(0.1);
                 end
             end
             
@@ -2045,7 +2155,16 @@ function runBluetoothMeshSimulation()
         
         for i = 1:length(attacker_indices)
             idx = attacker_indices(i);
-            nodes(idx) = launchAttack(nodes(idx), current_time, normal_node_ids);
+            [nodes(idx), attack_message] = launchAttack(nodes(idx), current_time, normal_node_ids);
+            
+            % Log attack messages if they were generated
+            if ~isempty(attack_message) && isstruct(attack_message) && isfield(attack_message, 'id')
+                logMessageDetails(attack_message, [], nodes(idx), current_time);
+                % Also log features for attack messages
+                logFeatureData(attack_message, current_time, nodes(idx), nodes(idx));
+                fprintf('ATTACK: Node %d launched %s attack with message %s\n', ...
+                    nodes(idx).id, nodes(idx).attack_strategy, attack_message.id);
+            end
         end
         
         % Enhanced message propagation with caching and duplicate detection
@@ -2095,6 +2214,9 @@ function runBluetoothMeshSimulation()
                                                 cache_entry.forwarded_to(end+1) = neighbor_id;
                                                 nodes(i).message_cache(msg_id) = cache_entry;
                                                 
+                                                % Also log features for forwarded messages from sender perspective
+                                                logFeatureData(forwarded_msg, current_time, nodes(i), []);
+                                                
                                                 fprintf('Node %d forwarded cached message %s to Node %d\n', ...
                                                     nodes(i).id, msg_id, neighbor_id);
                                             else
@@ -2122,8 +2244,19 @@ function runBluetoothMeshSimulation()
                 stats_history(end+1) = simulation_data.statistics;
             end
             
-            % Display current statistics
+            % Display current statistics with message generation info
             displayStatistics(simulation_data.statistics);
+            
+            % Show message generation stats
+            global message_log;
+            if ~isempty(message_log)
+                recent_logs = message_log([message_log.timestamp] >= (current_time - 30));
+                sent_messages = recent_logs(strcmp({recent_logs.detected_attack_type}, 'NOT_ANALYZED'));
+                received_messages = recent_logs(~strcmp({recent_logs.detected_attack_type}, 'NOT_ANALYZED'));
+                
+                fprintf('>>> MESSAGE ACTIVITY (Last 30s): %d sent, %d received/analyzed <<<\n', ...
+                    length(sent_messages), length(received_messages));
+            end
             
             % Update visualizations
             visualizeNetwork(nodes, current_time);
