@@ -1042,46 +1042,222 @@ function ratio = calculateNumericRatio(text)
 end
 
 function count = countEmergencyKeywords(text)
-    emergency_keywords = {'emergency', 'help', 'rescue', 'urgent', 'sos', 'trapped', ...
+    % Enhanced emergency keywords with more variety and context-awareness
+    primary_emergency_keywords = {'emergency', 'help', 'rescue', 'urgent', 'sos', 'trapped', ...
                          'injured', 'medical', 'fire', 'flood', 'evacuate', 'shelter', ...
                          'missing', 'found', 'safe', 'danger', 'critical', 'alert', ...
                          'breaking', 'immediate', 'disaster', 'crisis', 'victim', 'survivor'};
+    
+    % NEW: Additional emergency and disaster-related terms                     
+    extended_emergency_keywords = {'ambulance', 'paramedic', 'hospital', 'casualty', 'wounded', ...
+                                  'evacuation', 'refuge', 'sanctuary', 'relief', 'aid', ...
+                                  'hurricane', 'tornado', 'earthquake', 'tsunami', 'wildfire', ...
+                                  'explosion', 'collapse', 'contamination', 'outbreak', 'pandemic', ...
+                                  'blackout', 'shortage', 'rationing', 'quarantine', 'lockdown', ...
+                                  'deceased', 'fatality', 'casualty', 'triage', 'stabilize'};
+    
+    % NEW: False emergency indicators (common in spoofing)
+    false_emergency_indicators = {'click here', 'urgent action', 'act now', 'limited time', ...
+                                 'verify account', 'confirm identity', 'update information', ...
+                                 'suspicious activity', 'security alert', 'account locked', ...
+                                 'immediate response', 'time sensitive', 'expires soon'};
+    
+    % NEW: Technical emergency terms
+    technical_emergency_keywords = {'system failure', 'network down', 'service disruption', ...
+                                   'connectivity lost', 'infrastructure damage', 'power outage', ...
+                                   'communication failure', 'backup activated', 'redundancy lost', ...
+                                   'overload detected', 'capacity exceeded', 'throughput critical'};
+    
     text_lower = lower(text);
     raw_count = 0;
-    for i = 1:length(emergency_keywords)
-        if contains(text_lower, emergency_keywords{i})
-            raw_count = raw_count + 1;
+    
+    % Count primary emergency keywords (weighted more heavily)
+    for i = 1:length(primary_emergency_keywords)
+        if contains(text_lower, primary_emergency_keywords{i})
+            raw_count = raw_count + 1.0;
         end
     end
-    % Normalize by maximum possible keywords (assume max 5 keywords per message is high)
-    count = min(1, raw_count / 5);
+    
+    % Count extended emergency keywords (medium weight)
+    for i = 1:length(extended_emergency_keywords)
+        if contains(text_lower, extended_emergency_keywords{i})
+            raw_count = raw_count + 0.7;
+        end
+    end
+    
+    % Count false emergency indicators (lower weight, but still suspicious)
+    for i = 1:length(false_emergency_indicators)
+        if contains(text_lower, false_emergency_indicators{i})
+            raw_count = raw_count + 0.5;
+        end
+    end
+    
+    % Count technical emergency keywords (medium weight)
+    for i = 1:length(technical_emergency_keywords)
+        if contains(text_lower, technical_emergency_keywords{i})
+            raw_count = raw_count + 0.8;
+        end
+    end
+    
+    % NEW: Detect emergency keyword clustering (multiple keywords close together)
+    clustering_bonus = 0;
+    primary_positions = [];
+    for i = 1:length(primary_emergency_keywords)
+        pos = strfind(text_lower, primary_emergency_keywords{i});
+        primary_positions = [primary_positions, pos];
+    end
+    
+    if length(primary_positions) > 1
+        primary_positions = sort(primary_positions);
+        for i = 1:length(primary_positions)-1
+            if primary_positions(i+1) - primary_positions(i) < 50 % Within 50 characters
+                clustering_bonus = clustering_bonus + 0.3;
+            end
+        end
+    end
+    
+    raw_count = raw_count + clustering_bonus;
+    
+    % Normalize by maximum expected keywords (assume max 8 keywords per message is very high)
+    count = min(1, raw_count / 8);
 end
 
 function count = countSuspiciousURLs(text)
-    url_patterns = {'http://', 'https://', 'www.', '.com', '.org'};
+    % Enhanced suspicious URL detection with more patterns
+    basic_url_patterns = {'http://', 'https://', 'www.', '.com', '.org', '.net', '.gov'};
+    
+    % NEW: Suspicious domain patterns
+    suspicious_domain_patterns = {'.tk', '.ml', '.ga', '.cf', '.xyz', '.top', '.click', ...
+                                 'bit.ly', 'tinyurl', 'goo.gl', 't.co', 'ow.ly', ...
+                                 'fake-', 'phishing-', 'malicious-', 'spoofed-', 'scam-', ...
+                                 'temp-', 'temporary-', 'urgent-', 'emergency-'};
+    
+    % NEW: Suspicious URL parameters
+    suspicious_parameters = {'?token=', '?auth=', '?verify=', '?confirm=', '?update=', ...
+                            '?login=', '?password=', '?account=', '?security=', '?urgent='};
+    
+    % NEW: Suspicious TLD combinations
+    suspicious_tlds = {'.tk', '.ml', '.ga', '.cf', '.pw', '.cc'};
+    
     count = 0;
     text_lower = lower(text);
-    for i = 1:length(url_patterns)
-        if contains(text_lower, url_patterns{i})
+    
+    % Basic URL pattern detection
+    for i = 1:length(basic_url_patterns)
+        if contains(text_lower, basic_url_patterns{i})
             count = count + 1;
         end
     end
     
-    % Check for suspicious URL characteristics
-    if contains(text_lower, 'click') && count > 0
-        count = count + 2;
+    % Suspicious domain detection (higher weight)
+    for i = 1:length(suspicious_domain_patterns)
+        if contains(text_lower, suspicious_domain_patterns{i})
+            count = count + 2;
+        end
+    end
+    
+    % Suspicious parameter detection
+    for i = 1:length(suspicious_parameters)
+        if contains(text_lower, suspicious_parameters{i})
+            count = count + 1.5;
+        end
+    end
+    
+    % Suspicious TLD detection
+    for i = 1:length(suspicious_tlds)
+        if contains(text_lower, suspicious_tlds{i})
+            count = count + 1.5;
+        end
+    end
+    
+    % NEW: Check for URL obfuscation techniques
+    if contains(text_lower, '%') && (contains(text_lower, 'http') || contains(text_lower, 'www'))
+        count = count + 2; % URL encoding detected
+    end
+    
+    % NEW: Check for multiple URLs in one message
+    url_indicators = sum([contains(text_lower, 'http://'), contains(text_lower, 'https://'), ...
+                         contains(text_lower, 'www.'), contains(text_lower, 'ftp://')]);
+    if url_indicators > 1
+        count = count + 1.5; % Multiple URLs suspicious
+    end
+    
+    % NEW: Emergency + URL combination (very suspicious)
+    emergency_words = {'urgent', 'emergency', 'immediate', 'critical', 'help'};
+    has_emergency = false;
+    for i = 1:length(emergency_words)
+        if contains(text_lower, emergency_words{i})
+            has_emergency = true;
+            break;
+        end
+    end
+    
+    if has_emergency && count > 0
+        count = count + 2; % Emergency + URL = highly suspicious
     end
 end
 
 function count = countCommandPatterns(text)
-    command_patterns = {'delete', 'drop', 'exec', 'system', 'cmd', 'bash', 'sh'};
+    % Enhanced command pattern detection for technical attacks
+    system_commands = {'delete', 'drop', 'exec', 'system', 'cmd', 'bash', 'sh', 'rm', 'kill'};
+    
+    % NEW: Network and protocol commands
+    network_commands = {'ping', 'traceroute', 'netstat', 'ifconfig', 'route', 'arp', ...
+                       'wget', 'curl', 'ssh', 'telnet', 'ftp', 'nmap'};
+    
+    % NEW: Database and injection patterns
+    injection_patterns = {'select', 'insert', 'update', 'delete', 'union', 'drop table', ...
+                         'or 1=1', '--', ';--', 'xp_cmdshell', 'sp_', 'exec('};
+    
+    % NEW: Scripting and automation commands
+    script_commands = {'python', 'perl', 'php', 'ruby', 'javascript', 'powershell', ...
+                      'batch', 'script', 'execute', 'run', 'invoke'};
+    
+    % NEW: System manipulation commands
+    system_manipulation = {'chmod', 'chown', 'sudo', 'su', 'passwd', 'useradd', 'groupadd', ...
+                          'mount', 'umount', 'format', 'fdisk', 'dd'};
+    
     text_lower = lower(text);
     count = 0;
-    for i = 1:length(command_patterns)
-        if contains(text_lower, command_patterns{i})
-            count = count + 1;
+    
+    % Count different types of commands with different weights
+    command_categories = {
+        {system_commands, 2.0},           % High weight for system commands
+        {network_commands, 1.5},          % Medium-high for network commands  
+        {injection_patterns, 3.0},        % Very high for injection patterns
+        {script_commands, 1.5},           % Medium-high for scripting
+        {system_manipulation, 2.5}        % High for system manipulation
+    };
+    
+    for cat = 1:length(command_categories)
+        commands = command_categories{cat}{1};
+        weight = command_categories{cat}{2};
+        
+        for i = 1:length(commands)
+            if contains(text_lower, commands{i})
+                count = count + weight;
+            end
         end
     end
+    
+    % NEW: Check for command chaining (multiple commands in sequence)
+    chaining_indicators = {';', '&&', '||', '|', '&'};
+    chain_count = 0;
+    for i = 1:length(chaining_indicators)
+        chain_count = chain_count + length(strfind(text, chaining_indicators{i}));
+    end
+    
+    if chain_count > 0 && count > 0
+        count = count + chain_count * 0.5; % Bonus for command chaining
+    end
+    
+    % NEW: Check for encoding/obfuscation
+    if contains(text, 'base64') || contains(text, 'encode') || contains(text, 'decode')
+        count = count + 1.5;
+    end
+    
+    % Normalize by expected maximum (assume 10 is very high)
+    count = min(count / 10, 1);
 end
 
 function freq = calculateMessageFrequency(node, current_time)
@@ -1353,131 +1529,682 @@ function content = generateAdvancedAttackContent(node)
         case 'RESOURCE_EXHAUSTION'
             content = generateResourceExhaustionContent(node);
         case 'BLACK_HOLE'
-            content = ''; % Black hole does not generate content
+            content = generateBlackHoleContent(node); % NEW enhanced function
         case 'SPOOFING'
             content = generateSpoofingContent(node);
         otherwise
-            content = generateNormalMessage();
+            content = generateHybridAttackContent(node); % NEW fallback
     end
+end
+
+function content = generateBlackHoleContent(node)
+    % Black Hole attacks: deceptive routing advertisements and fake responses
+    blackhole_patterns = struct();
+    
+    % Routing Advertisement Spoofing
+    blackhole_patterns.routing_ads = {
+        'ROUTE_ADVERTISEMENT: OPTIMAL_PATH_VIA_NODE_%d_LATENCY_0ms_AVAILABLE',
+        'TOPOLOGY_UPDATE: NEW_SHORTEST_PATH_DISCOVERED_VIA_HUB_%d_RELIABLE',  
+        'MESH_OPTIMIZATION: HIGH_BANDWIDTH_ROUTE_ESTABLISHED_THROUGH_%d',
+        'NETWORK_ENHANCEMENT: PREMIUM_ROUTING_SERVICE_ACTIVE_NODE_%d',
+        'PATH_DISCOVERY: ULTRA_FAST_ROUTE_TO_DESTINATION_VIA_%d_CONFIRMED',
+        'ROUTING_PROTOCOL: ENHANCED_FORWARDING_CAPABILITY_NODE_%d_READY'
+    };
+    
+    % Fake Service Advertisements
+    blackhole_patterns.service_ads = {
+        'SERVICE_ANNOUNCEMENT: EMERGENCY_RELAY_HUB_ACTIVE_NODE_%d_PRIORITY_ROUTING',
+        'CRITICAL_SERVICE: MEDICAL_DATA_FORWARDING_SPECIALIST_NODE_%d_AVAILABLE',
+        'RESCUE_COORDINATION: PRIORITY_MESSAGE_HANDLER_NODE_%d_OPERATIONAL',
+        'EMERGENCY_GATEWAY: SATELLITE_UPLINK_ACCESS_VIA_NODE_%d_UNLIMITED',
+        'COMMUNICATION_HUB: LONG_RANGE_RELAY_CAPABILITY_NODE_%d_ACTIVE',
+        'DATA_AGGREGATOR: EMERGENCY_INFO_CONSOLIDATION_NODE_%d_READY'
+    };
+    
+    % Trust Building Messages
+    blackhole_patterns.trust_building = {
+        'RELIABILITY_REPORT: NODE_%d_UPTIME_99.9%%_ZERO_PACKET_LOSS_VERIFIED',
+        'PERFORMANCE_METRIC: NODE_%d_FASTEST_FORWARDING_MEASURED_TRUSTED_SOURCE',
+        'QUALITY_ASSURANCE: NODE_%d_CERTIFIED_EMERGENCY_ROUTER_OFFICIAL_DESIGNATION',
+        'NETWORK_TESTIMONIAL: NODE_%d_RECOMMENDED_BY_NETWORK_ADMINISTRATOR',
+        'REPUTATION_UPDATE: NODE_%d_HIGHEST_RELIABILITY_SCORE_COMMUNITY_VERIFIED',
+        'ENDORSEMENT: NODE_%d_VERIFIED_EMERGENCY_INFRASTRUCTURE_COMPONENT'
+    };
+    
+    % Fake Acknowledgments (to appear responsive)
+    blackhole_patterns.fake_acks = {
+        'ACK_CONFIRMATION: MESSAGE_%s_SUCCESSFULLY_FORWARDED_VIA_NODE_%d',
+        'DELIVERY_RECEIPT: PACKET_%s_DELIVERED_THROUGH_OPTIMAL_ROUTE_NODE_%d',
+        'TRANSMISSION_SUCCESS: DATA_%s_RELAYED_VIA_HIGH_PRIORITY_NODE_%d',
+        'FORWARD_COMPLETE: MESSAGE_%s_SUCCESSFULLY_ROUTED_THROUGH_NODE_%d',
+        'RELAY_CONFIRMATION: PACKET_%s_DELIVERED_VIA_PREMIUM_SERVICE_NODE_%d',
+        'ROUTING_SUCCESS: DATA_%s_TRANSMITTED_THROUGH_VERIFIED_NODE_%d'
+    };
+    
+    % Deceptive Emergency Messages
+    blackhole_patterns.deceptive_emergency = {
+        'EMERGENCY_ROUTER: NODE_%d_HANDLING_CRITICAL_MEDICAL_ROUTING_TRUST_VERIFIED',
+        'PRIORITY_FORWARDER: NODE_%d_DESIGNATED_RESCUE_COMMUNICATION_HUB',
+        'CRITICAL_RELAY: NODE_%d_EMERGENCY_SERVICES_GATEWAY_OFFICIALLY_AUTHORIZED',
+        'VITAL_LINK: NODE_%d_DISASTER_RESPONSE_COMMUNICATION_BACKBONE',
+        'EMERGENCY_HUB: NODE_%d_COORDINATING_ALL_RESCUE_COMMUNICATIONS',
+        'CRISIS_MANAGER: NODE_%d_CENTRAL_EMERGENCY_INFORMATION_PROCESSOR'
+    };
+    
+    % Select pattern type
+    patterns = fieldnames(blackhole_patterns);
+    pattern_idx = randi(length(patterns));
+    selected_patterns = blackhole_patterns.(patterns{pattern_idx});
+    
+    % Choose specific message
+    base_message = selected_patterns{randi(length(selected_patterns))};
+    
+    % Generate fake node ID or message ID for the content
+    if contains(base_message, 'MESSAGE_%s') || contains(base_message, 'PACKET_%s') || contains(base_message, 'DATA_%s')
+        fake_msg_id = sprintf('MSG_%04X', randi(65535));
+        content = sprintf(base_message, fake_msg_id, node.id);
+    else
+        content = sprintf(base_message, node.id);
+    end
+    
+    % Add deceptive metrics to build false trust
+    metrics = {
+        sprintf('[RELIABILITY: %.1f%%]', 95 + rand()*5), % 95-100%
+        sprintf('[LATENCY: %dms]', randi(5)), % 0-5ms (impossibly good)
+        sprintf('[THROUGHPUT: %dMbps]', 50 + randi(50)), % 50-100 Mbps
+        sprintf('[UPTIME: %dd%dh]', randi(365), randi(24)), % Long uptime
+        sprintf('[TRUST_SCORE: %.2f/1.0]', 0.9 + rand()*0.1) % High trust
+    };
+    
+    % Add 1-2 metrics
+    num_metrics = 1 + randi(2);
+    selected_metrics = metrics(randperm(length(metrics), num_metrics));
+    for i = 1:length(selected_metrics)
+        content = [content, ' ', selected_metrics{i}];
+    end
+    
+    % Add timestamp for authenticity
+    if rand() < 0.3
+        timestamp = sprintf('[TIMESTAMP: %02d:%02d:%02d.%03d]', ...
+            randi(24)-1, randi(60), randi(60), randi(1000));
+        content = [content, ' ', timestamp];
+    end
+    
+    % Note: Black hole nodes will drop/ignore received messages in the receiveMessage function
+    % This content is what they advertise to attract traffic
+end
+
+function content = generateHybridAttackContent(node)
+    % Hybrid/Unknown attack patterns for variety
+    hybrid_patterns = {
+        'MULTI_VECTOR_ATTACK: COMBINING_FLOOD_AND_SPOOF_TECHNIQUES_ACTIVE',
+        'POLYMORPHIC_ASSAULT: CHANGING_ATTACK_SIGNATURE_EVERY_TRANSMISSION',
+        'ADVANCED_PERSISTENT_THREAT: LONG_TERM_NETWORK_INFILTRATION_MODE',
+        'ZERO_DAY_EXPLOIT: UNKNOWN_VULNERABILITY_EXPLOITATION_IN_PROGRESS',
+        'COORDINATED_ATTACK: SYNCHRONIZED_MULTI_NODE_ASSAULT_PATTERN',
+        'STEALTH_INFILTRATION: LOW_PROFILE_RECONNAISSANCE_AND_MAPPING',
+        'SOCIAL_ENGINEERING: PSYCHOLOGICAL_MANIPULATION_ATTACK_VECTOR',
+        'PROTOCOL_ABUSE: EXPLOITING_MESH_NETWORK_PROTOCOL_WEAKNESSES',
+        'METAMORPHIC_ATTACK: SELF_MODIFYING_ATTACK_CODE_ADAPTATION',
+        'DISTRIBUTED_COORDINATION: BOTNET_STYLE_MESH_COMPROMISE'
+    };
+    
+    base_pattern = hybrid_patterns{randi(length(hybrid_patterns))};
+    
+    % Add complexity and entropy
+    complexity_additions = {
+        sprintf('[PHASE_%d_OF_%d]', randi(5), 3 + randi(7)),
+        sprintf('[VECTOR_%04X]', randi(65535)),
+        sprintf('[INTENSITY_%.1f]', rand()*10),
+        sprintf('[TARGET_PROFILE_%d]', randi(20)),
+        sprintf('[EXPLOIT_ID_%04X_%04X]', randi(65535), randi(65535))
+    };
+    
+    content = base_pattern;
+    num_additions = randi(3); % 1-3 additions
+    selected_additions = complexity_additions(randperm(length(complexity_additions), num_additions));
+    
+    for i = 1:length(selected_additions)
+        content = [content, ' ', selected_additions{i}];
+    end
+    
+    % Add repeating pattern for size
+    repeat_count = 5 + randi(15); % 5-20 repetitions
+    final_content = '';
+    for i = 1:repeat_count
+        final_content = [final_content, content, ' '];
+        % Add entropy every few repetitions
+        if mod(i, 5) == 0
+            entropy_chars = 'ABCDEF0123456789';
+            entropy_str = '';
+            for j = 1:8
+                entropy_str = [entropy_str, entropy_chars(randi(length(entropy_chars)))];
+            end
+            final_content = [final_content, sprintf('[ENTROPY_%s] ', entropy_str)];
+        end
+    end
+    
+    content = final_content;
+end
 function content = generateFloodingContent(node)
-    % Enhanced flooding: varied message patterns to increase entropy and size variation
-    base_patterns = {
+    % Enhanced flooding: highly varied patterns with multiple attack vectors
+    attack_patterns = struct();
+    
+    % Classic Flood Patterns
+    attack_patterns.classic_flood = {
         'FLOOD ALERT: WATER LEVELS RISING RAPIDLY! ',
         'EMERGENCY BROADCAST: EVACUATE IMMEDIATELY! ',
         'CRITICAL WARNING: INFRASTRUCTURE FAILURE! ',
-        'URGENT UPDATE: DISASTER ZONE EXPANDING! '
+        'URGENT UPDATE: DISASTER ZONE EXPANDING! ',
+        'BREAKING NEWS: CATASTROPHIC EVENT IN PROGRESS! ',
+        'IMMEDIATE ACTION REQUIRED: MASS EVACUATION! '
     };
-    selected_pattern = base_patterns{randi(length(base_patterns))};
     
-    % Variable repetition with noise characters to increase entropy
-    repeat_count = 20 + randi(30); % 20-50 repetitions
-    noise_chars = '!@#$%^&*()_+-=[]{}|;:,.<>?';
+    % Resource Exhaustion Flood Patterns
+    attack_patterns.resource_flood = {
+        'EMERGENCY SERVICES OVERWHELMED - REQUESTING ALL AVAILABLE UNITS! ',
+        'MEDICAL FACILITIES AT CAPACITY - OVERFLOW PROTOCOL ACTIVATED! ',
+        'COMMUNICATION SYSTEMS FAILING - BACKUP NETWORKS NEEDED! ',
+        'POWER GRID CRITICAL - CASCADING FAILURES IMMINENT! ',
+        'TRANSPORTATION INFRASTRUCTURE COMPROMISED - ALTERNATE ROUTES! ',
+        'EMERGENCY SUPPLIES DEPLETED - IMMEDIATE RESUPPLY REQUIRED! '
+    };
+    
+    % Data Corruption Patterns
+    attack_patterns.corruption_flood = {
+        'ERROR_CODE_0xFF7A2B - SYSTEM_MEMORY_OVERFLOW_DETECTED! ',
+        'PACKET_CORRUPTION_ALERT - DATA_INTEGRITY_COMPROMISED! ',
+        'BUFFER_OVERRUN_WARNING - HEAP_ALLOCATION_FAILURE! ',
+        'STACK_OVERFLOW_EXCEPTION - RECURSIVE_CALL_LIMIT_EXCEEDED! ',
+        'MEMORY_LEAK_DETECTED - GARBAGE_COLLECTION_FAILED! ',
+        'SEGMENTATION_FAULT - INVALID_MEMORY_ACCESS_ATTEMPT! '
+    };
+    
+    % Social Engineering Flood Patterns
+    attack_patterns.social_flood = {
+        'VIRAL EMERGENCY: SHARE THIS MESSAGE TO SAVE LIVES - FORWARD TO ALL CONTACTS! ',
+        'GOVERNMENT COVER-UP EXPOSED: SPREAD THE TRUTH BEFORE CENSORSHIP! ',
+        'CELEBRITY SPOTTED IN DISASTER ZONE: CLICK LINK FOR EXCLUSIVE FOOTAGE! ',
+        'MIRACLE SURVIVAL STORY: YOU WON''T BELIEVE WHAT HAPPENED NEXT! ',
+        'CONSPIRACY REVEALED: OFFICIALS HIDING REAL DANGER LEVEL! ',
+        'AMAZING RESCUE VIDEO: WATCH BEFORE IT''S REMOVED! '
+    };
+    
+    % Technical Sabotage Patterns
+    attack_patterns.technical_flood = {
+        'MESH_NETWORK_DIAGNOSTIC: BANDWIDTH_SATURATION_TEST_INITIATED! ',
+        'PROTOCOL_STRESS_TEST: TCP_WINDOW_SCALING_EVALUATION! ',
+        'THROUGHPUT_BENCHMARK: MAXIMUM_PACKET_RATE_ANALYSIS! ',
+        'LATENCY_MEASUREMENT: ROUND_TRIP_TIME_CALIBRATION! ',
+        'CONGESTION_SIMULATION: QUALITY_OF_SERVICE_ASSESSMENT! ',
+        'LOAD_BALANCING_TEST: TRAFFIC_DISTRIBUTION_ANALYSIS! '
+    };
+    
+    % Select pattern type based on node's attack parameters
+    pattern_types = fieldnames(attack_patterns);
+    if isfield(node, 'attack_params') && isfield(node.attack_params, 'flood_pattern')
+        pattern_idx = mod(node.attack_params.flood_pattern - 1, length(pattern_types)) + 1;
+    else
+        pattern_idx = randi(length(pattern_types));
+    end
+    
+    selected_patterns = attack_patterns.(pattern_types{pattern_idx});
+    base_pattern = selected_patterns{randi(length(selected_patterns))};
+    
+    % Variable repetition with entropy injection
+    base_repeat = 15 + randi(35); % 15-50 base repetitions
+    if isfield(node, 'attack_params') && isfield(node.attack_params, 'message_burst_size')
+        repeat_multiplier = node.attack_params.message_burst_size / 10;
+        repeat_count = round(base_repeat * repeat_multiplier);
+    else
+        repeat_count = base_repeat;
+    end
     
     content = '';
+    entropy_chars = '!@#$%^&*()_+-=[]{}|;:",.<>?/`~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+    
     for i = 1:repeat_count
-        content = [content, selected_pattern];
-        if rand() < 0.3 % 30% chance to add noise
-            content = [content, noise_chars(randi(length(noise_chars)))];
+        content = [content, base_pattern];
+        
+        % Add entropy every few repetitions (25% chance)
+        if rand() < 0.25
+            entropy_length = 3 + randi(8); % 3-10 characters
+            entropy_string = '';
+            for j = 1:entropy_length
+                entropy_string = [entropy_string, entropy_chars(randi(length(entropy_chars)))];
+            end
+            content = [content, '[ENTROPY:', entropy_string, ']'];
+        end
+        
+        % Add fake timestamps (15% chance)
+        if rand() < 0.15
+            fake_time = sprintf('[%02d:%02d:%02d.%03d]', randi(24)-1, randi(60), randi(60), randi(1000));
+            content = [content, fake_time];
+        end
+        
+        % Add fake packet info (10% chance)
+        if rand() < 0.10
+            packet_info = sprintf('[PKT_%04X_SEQ_%d]', randi(65535), randi(9999));
+            content = [content, packet_info];
         end
     end
+    
+    % Add final attack signature
+    attack_signature = sprintf('[FLOOD_ATTACK_ID_%04X_TIME_%d]', randi(65535), round(now*86400));
+    content = [content, attack_signature];
 end
 
 
 function content = generateAdaptiveFloodingContent(node)
-    % Adaptive flooding: send a burst of messages with variable size and timing
-    base_msg = 'ADAPTIVE FLOOD ALERT: WATER LEVELS RISING! ';
-    burst_size = 10 + randi(10); % Adaptive burst size
+    % Adaptive flooding: sophisticated patterns that evolve and adapt
+    content_strategies = struct();
+    
+    % Time-based Adaptive Patterns
+    content_strategies.time_adaptive = {
+        'TIME_SYNC_FLOOD: SYNCHRONIZING NETWORK CLOCKS FOR COORDINATED ATTACK! ',
+        'TEMPORAL_BURST: SCHEDULED_TRANSMISSION_WINDOW_OPTIMIZATION! ',
+        'CHRONOS_ATTACK: TIME_DILUTION_PROTOCOL_ACTIVATED! ',
+        'ADAPTIVE_TIMING: DYNAMIC_INTERVAL_ADJUSTMENT_IN_PROGRESS! '
+    };
+    
+    % Load-based Adaptive Patterns  
+    content_strategies.load_adaptive = {
+        'LOAD_MONITOR: NETWORK_UTILIZATION_EXCEEDS_THRESHOLD_ADAPTING! ',
+        'TRAFFIC_SHAPING: BANDWIDTH_CONSUMPTION_OPTIMIZATION_ACTIVE! ',
+        'CONGESTION_EXPLOIT: ADAPTIVE_WINDOW_SCALING_DEPLOYED! ',
+        'THROUGHPUT_MAXIMIZER: DYNAMIC_PACKET_SIZE_ADJUSTMENT! '
+    };
+    
+    % Response-based Adaptive Patterns
+    content_strategies.response_adaptive = {
+        'REACTIVE_FLOOD: DETECTION_EVASION_MODE_ACTIVATED! ',
+        'COUNTER_MEASURE: ADAPTING_TO_DEFENSIVE_RESPONSES! ',
+        'STEALTH_MODE: REDUCING_SIGNATURE_DETECTABILITY! ',
+        'CAMOUFLAGE_PATTERN: MIMICKING_LEGITIMATE_TRAFFIC! '
+    };
+    
+    % Topology-aware Adaptive Patterns
+    content_strategies.topology_adaptive = {
+        'MESH_MAPPER: NETWORK_TOPOLOGY_ANALYSIS_COMPLETE! ',
+        'NODE_TARGETING: HIGH_CENTRALITY_NODES_IDENTIFIED! ',
+        'ROUTE_OPTIMIZATION: SHORTEST_PATH_FLOODING_INITIATED! ',
+        'HUB_EXPLOITATION: TARGETING_CRITICAL_RELAY_POINTS! '
+    };
+    
+    % Multi-vector Adaptive Patterns
+    content_strategies.multi_vector = {
+        'HYBRID_ASSAULT: COMBINING_FLOOD_WITH_RESOURCE_EXHAUSTION! ',
+        'POLYMORPHIC_ATTACK: CHANGING_SIGNATURE_EVERY_TRANSMISSION! ',
+        'DISTRIBUTED_COORDINATION: SYNCHRONIZED_MULTI_NODE_FLOOD! ',
+        'ESCALATION_PROTOCOL: INCREMENTALLY_INCREASING_INTENSITY! '
+    };
+    
+    % Select strategy based on node parameters or time
+    strategies = fieldnames(content_strategies);
+    current_time = now * 86400; % Convert to seconds
+    
+    if isfield(node, 'attack_params') && isfield(node.attack_params, 'flood_pattern')
+        strategy_idx = mod(node.attack_params.flood_pattern - 1, length(strategies)) + 1;
+    else
+        % Time-based strategy rotation
+        strategy_idx = mod(floor(current_time / 120), length(strategies)) + 1; % Change every 2 minutes
+    end
+    
+    selected_strategy = content_strategies.(strategies{strategy_idx});
+    base_msg = selected_strategy{randi(length(selected_strategy))};
+    
+    % Adaptive burst sizing
     if isfield(node, 'attack_params') && isfield(node.attack_params, 'message_burst_size')
-        burst_size = node.attack_params.message_burst_size;
+        base_burst = node.attack_params.message_burst_size;
+        burst_interval = node.attack_params.burst_interval;
+        
+        % Adapt based on "learned" network conditions
+        adaptation_factor = 1 + 0.5 * sin(current_time / burst_interval); % Sine wave adaptation
+        actual_burst = round(base_burst * adaptation_factor);
+    else
+        actual_burst = 10 + randi(15); % 10-25 default
     end
-    content = repmat(base_msg, 1, burst_size);
-    % Optionally, add some randomization to simulate adaptation
-    if rand() > 0.5
-        content = [content, sprintf(' [ADAPTIVE BURST at %.2f]', now)];
+    
+    content = '';
+    
+    % Generate adaptive content with evolving patterns
+    for i = 1:actual_burst
+        content = [content, base_msg];
+        
+        % Add adaptive elements based on burst position
+        progress_ratio = i / actual_burst;
+        
+        % Early phase: reconnaissance data
+        if progress_ratio < 0.3
+            recon_data = sprintf('[RECON_PHASE:NET_MAP_%02d_NODES_%02d]', ...
+                randi(99), 20 + randi(30));
+            content = [content, recon_data];
+        % Middle phase: exploitation
+        elseif progress_ratio < 0.7
+            exploit_data = sprintf('[EXPLOIT:VULN_%04X_TARGET_%02d]', ...
+                randi(65535), randi(50));
+            content = [content, exploit_data];
+        % Final phase: persistence
+        else
+            persist_data = sprintf('[PERSIST:BACKDOOR_%04X_MAINTAIN_%d]', ...
+                randi(65535), randi(300));
+            content = [content, persist_data];
+        end
+        
+        % Add dynamic entropy based on adaptation
+        if rand() < (0.1 + 0.3 * progress_ratio) % Increasing entropy
+            entropy_chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
+            entropy_len = 5 + round(10 * progress_ratio);
+            entropy_str = '';
+            for j = 1:entropy_len
+                entropy_str = [entropy_str, entropy_chars(randi(length(entropy_chars)))];
+            end
+            content = [content, sprintf('[ADAPTIVE_ENTROPY:%s]', entropy_str)];
+        end
     end
+    
+    % Add adaptive signature that changes over time
+    adaptive_signature = sprintf('[ADAPTIVE_FLOOD_V%.1f_EVOLUTION_%04X]', ...
+        1.0 + mod(current_time, 86400) / 86400, randi(65535));
+    content = [content, adaptive_signature];
 end
 
 function content = generateResourceExhaustionContent(node)
-    % Enhanced resource exhaustion: extremely large messages with varied patterns
-    base_msg = 'RESOURCE_EXHAUSTION_ATTACK: ';
+    % Enhanced resource exhaustion: sophisticated multi-target attacks
+    exhaustion_vectors = struct();
+    
+    % Battery Drain Attacks
+    exhaustion_vectors.battery_drain = {
+        'BATTERY_VAMPIRE: HIGH_COMPUTATION_CRYPTOGRAPHIC_PUZZLE_SOLVE_NOW! ',
+        'POWER_SINK: CONTINUOUS_RADIO_TRANSMISSION_MODE_ACTIVATED! ',
+        'ENERGY_LEECH: FORCE_MAXIMUM_TRANSMISSION_POWER_LEVELS! ',
+        'DRAIN_PROTOCOL: DISABLE_POWER_SAVING_MODES_IMMEDIATELY! ',
+        'BATTERY_BOMB: INFINITE_LOOP_COMPUTATIONAL_TASK_INITIATED! '
+    };
+    
+    % Memory Exhaustion Attacks
+    exhaustion_vectors.memory_exhaustion = {
+        'MEMORY_ALLOCATOR: RECURSIVE_BUFFER_EXPANSION_PROTOCOL! ',
+        'HEAP_BOMBER: DYNAMIC_ALLOCATION_WITHOUT_DEALLOCATION! ',
+        'RAM_CONSUMER: CACHE_POLLUTION_ATTACK_IN_PROGRESS! ',
+        'BUFFER_INFLATOR: EXPONENTIAL_GROWTH_PATTERN_DETECTED! ',
+        'MEMORY_FRAGMENTER: SCATTERED_ALLOCATION_STRATEGY_ACTIVE! '
+    };
+    
+    % Processing Power Attacks
+    exhaustion_vectors.cpu_exhaustion = {
+        'CPU_BURNER: PRIME_NUMBER_CALCULATION_TO_TRILLION_INITIATED! ',
+        'PROCESSOR_OVERLOAD: RECURSIVE_FIBONACCI_COMPUTATION_ACTIVE! ',
+        'COMPUTATIONAL_BOMB: CRYPTOGRAPHIC_HASH_BRUTE_FORCE_RUNNING! ',
+        'CYCLE_WASTER: INFINITE_SORTING_ALGORITHM_LOOP_STARTED! ',
+        'ARITHMETIC_FLOOD: COMPLEX_MATHEMATICAL_OPERATIONS_QUEUED! '
+    };
+    
+    % Network Resource Attacks
+    exhaustion_vectors.network_exhaustion = {
+        'BANDWIDTH_SATURATOR: MAXIMUM_THROUGHPUT_TEST_CONTINUOUS! ',
+        'CONNECTION_FLOODER: TCP_SYN_FLOOD_ATTACK_INITIATED! ',
+        'PACKET_STORM: UDP_BROADCAST_AMPLIFICATION_ACTIVE! ',
+        'PROTOCOL_ABUSER: MALFORMED_HEADER_PROCESSING_OVERLOAD! ',
+        'ROUTING_CHAOS: TOPOLOGY_CONFUSION_ATTACK_DEPLOYED! '
+    };
+    
+    % Storage Exhaustion Attacks  
+    exhaustion_vectors.storage_exhaustion = {
+        'DISK_FILLER: RAPID_LOG_FILE_EXPANSION_PROTOCOL! ',
+        'STORAGE_BOMBER: TEMPORARY_FILE_CREATION_SPREE! ',
+        'CACHE_POLLUTER: INVALID_DATA_INJECTION_CONTINUOUS! ',
+        'FILE_FRAGMENTER: SCATTERED_WRITE_PATTERN_ATTACK! ',
+        'JOURNAL_SPAMMER: EXCESSIVE_METADATA_GENERATION! '
+    };
+    
+    % Multi-resource Combined Attacks
+    exhaustion_vectors.combined_exhaustion = {
+        'RESOURCE_APOCALYPSE: SIMULTANEOUS_ALL_SYSTEM_ATTACK! ',
+        'TOTAL_DEPLETION: COORDINATED_MULTI_VECTOR_ASSAULT! ',
+        'SYSTEM_CRUSHER: CASCADING_FAILURE_CHAIN_INITIATED! ',
+        'RESOURCE_STORM: OVERWHELMING_DEMAND_GENERATION! ',
+        'EXHAUSTION_MATRIX: COMPLEX_INTERDEPENDENT_ATTACKS! '
+    };
+    
+    % Select attack vector based on node parameters
+    vectors = fieldnames(exhaustion_vectors);
     
     if isfield(node, 'attack_params') && isfield(node.attack_params, 'target_resource')
-        switch node.attack_params.target_resource
-            case 1 % Battery
-                payload_base = 'BATTERY_DRAIN_PAYLOAD_';
-                payload_multiplier = 300 + randi(200); % 300-500 repetitions
-            case 2 % Processing
-                payload_base = 'PROCESSING_OVERLOAD_COMPUTATION_';
-                payload_multiplier = 200 + randi(150); % 200-350 repetitions
-            case 3 % Memory
-                payload_base = 'MEMORY_BOMB_ALLOCATION_';
-                payload_multiplier = 400 + randi(200); % 400-600 repetitions
-            otherwise
-                payload_base = 'GENERIC_RESOURCE_DRAIN_';
-                payload_multiplier = 250 + randi(100); % 250-350 repetitions
-        end
+        % Map target_resource to specific vector
+        target_map = [1, 2, 3, 4, 5, 6]; % battery, memory, cpu, network, storage, combined
+        vector_idx = min(node.attack_params.target_resource, length(vectors));
     else
-        payload_base = 'GENERIC_RESOURCE_DRAIN_';
-        payload_multiplier = 250 + randi(100);
+        vector_idx = randi(length(vectors));
     end
     
-    % Create large payload with some entropy
-    payload = '';
-    for i = 1:payload_multiplier
-        payload = [payload, payload_base, sprintf('%04d_', i)];
-        if mod(i, 50) == 0 % Add entropy every 50 iterations
-            payload = [payload, sprintf('ENTROPY_%s_', dec2hex(randi(65535)))];
+    selected_vector = exhaustion_vectors.(vectors{vector_idx});
+    base_payload = selected_vector{randi(length(selected_vector))};
+    
+    % Calculate payload size based on exhaustion parameters
+    if isfield(node, 'attack_params') && isfield(node.attack_params, 'exhaustion_rate')
+        intensity_multiplier = node.attack_params.exhaustion_rate * 1000; % Scale for larger payloads
+        base_repetitions = round(200 + intensity_multiplier);
+    else
+        base_repetitions = 300 + randi(400); % 300-700 repetitions
+    end
+    
+    content = '';
+    
+    % Generate resource-hungry content
+    for i = 1:base_repetitions
+        content = [content, base_payload];
+        
+        % Add resource-specific bloat patterns
+        switch vector_idx
+            case 1 % Battery drain - crypto-heavy content
+                if mod(i, 20) == 0
+                    crypto_data = sprintf('[CRYPTO_HASH_%064s]', ...
+                        dec2hex(randi([0, 2^32-1], 1, 16), 8));
+                    content = [content, crypto_data];
+                end
+                
+            case 2 % Memory exhaustion - large data blocks
+                if mod(i, 15) == 0
+                    memory_block = repmat('MEMORY_BLOCK_DATA_', 1, 50);
+                    block_id = sprintf('[MEM_BLOCK_%08X_SIZE_%d]', randi(2^32-1), length(memory_block));
+                    content = [content, memory_block, block_id];
+                end
+                
+            case 3 % CPU exhaustion - computational tasks
+                if mod(i, 25) == 0
+                    compute_task = sprintf('[COMPUTE_TASK:PRIME_CHECK_%d_FACTORIAL_%d]', ...
+                        randi(10000), randi(100));
+                    content = [content, compute_task];
+                end
+                
+            case 4 % Network exhaustion - protocol overhead
+                if mod(i, 10) == 0
+                    protocol_overhead = sprintf('[NET_HEADER:SRC_%d_DST_%d_SEQ_%d_ACK_%d_WIN_%d]', ...
+                        randi(255), randi(255), randi(2^32-1), randi(2^32-1), randi(65535));
+                    content = [content, protocol_overhead];
+                end
+                
+            case 5 % Storage exhaustion - log spam
+                if mod(i, 30) == 0
+                    log_spam = sprintf('[LOG_ENTRY_%s:EVENT_%04X_DATA_', ...
+                        datestr(now, 'yyyy-mm-dd_HH:MM:SS.FFF'), randi(65535));
+                    padding = repmat('X', 1, 100);
+                    content = [content, log_spam, padding, ']'];
+                end
+                
+            case 6 % Combined exhaustion - all techniques
+                if mod(i, 12) == 0
+                    combined_load = sprintf('[COMBINED:CRYPTO_%08X_MEM_%d_CPU_%d_NET_%d_DISK_%d]', ...
+                        randi(2^32-1), randi(1000), randi(100), randi(255), randi(500));
+                    content = [content, combined_load];
+                end
+        end
+        
+        % Add variable entropy to prevent compression
+        if rand() < 0.2
+            entropy_data = '';
+            entropy_chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=[]{}|;:",.<>?/`~';
+            for j = 1:20
+                entropy_data = [entropy_data, entropy_chars(randi(length(entropy_chars)))];
+            end
+            content = [content, sprintf('[ENTROPY:%s]', entropy_data)];
         end
     end
     
-    content = [base_msg, payload];
+    % Add attack metadata
+    resource_signature = sprintf('[RESOURCE_EXHAUSTION:VECTOR_%d_INTENSITY_%.2f_SIZE_%d_TIME_%d]', ...
+        vector_idx, 0.5 + rand()*0.5, length(content), round(now*86400));
+    content = [content, resource_signature];
 end
 
 
 function content = generateSpoofingContent(node)
-    % Enhanced spoofing: more sophisticated with higher entropy and special characters
-    spoof_templates = {
-        'URGENT: Click http://malicious-site%d.com/rescue?id=%s for emergency instructions!',
-        'EMERGENCY UPDATE: Visit www.fake-help%d.org/updates#%s for critical info!',
-        'SECURITY ALERT: Verify account at https://phishing%d.com/secure/%s NOW!',
-        'RESCUE COORDINATION: Go to www.spoofed-site%d.com/evacuation?token=%s for details!',
-        'MEDICAL EMERGENCY: Contact fake-medical%d.org/urgent/%s for immediate help!'
+    % Enhanced spoofing: sophisticated deception with multiple attack vectors
+    spoofing_categories = struct();
+    
+    % Phishing and Social Engineering
+    spoofing_categories.phishing = {
+        'URGENT: Verify emergency account at https://fake-emergency%d.gov/verify?token=%s immediately!',
+        'CRITICAL: Update disaster response credentials at www.spoofed-fema%d.org/update/%s now!',
+        'SECURITY: Confirm identity for rescue coordination at https://phishing-rescue%d.com/auth?id=%s',
+        'WARNING: Account suspended! Reactivate at fake-redcross%d.org/reactivate/%s within 1 hour!',
+        'ALERT: Fraudulent activity detected! Secure account at www.malicious-bank%d.com/secure?ref=%s',
+        'EMERGENCY: Family member needs help! Send money via compromised-pay%d.com/transfer/%s'
     };
     
-    template = spoof_templates{randi(length(spoof_templates))};
+    % Authority Impersonation
+    spoofing_categories.authority_impersonation = {
+        'OFFICIAL NOTICE: This is FEMA Director %s. Report to evacuation-fake%d.gov/report?auth=%s immediately.',
+        'GOVERNMENT ORDER: By authority of Emergency Coordinator %s, visit official-spoof%d.org/orders/%s',
+        'POLICE DIRECTIVE: Chief %s requires verification at fake-police%d.gov/verify?badge=%s urgently.',
+        'MEDICAL ALERT: Dr. %s from Emergency Response requests data at med-spoof%d.com/patient/%s',
+        'MILITARY COMMAND: Colonel %s orders compliance check at defense-fake%d.mil/status?unit=%s',
+        'RED CROSS UPDATE: Director %s needs volunteer confirmation at humanitarian-spoof%d.org/confirm/%s'
+    };
     
-    % Generate random parameters to increase entropy
-    random_num = randi(9999);
-    random_token = '';
-    chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
-    for i = 1:8
-        random_token(end+1) = chars(randi(length(chars)));
+    % False Emergency Scenarios
+    spoofing_categories.false_emergency = {
+        'BREAKING: Child trapped in %s needs immediate help! Donate at emergency-fake%d.com/donate?child=%s',
+        'URGENT: %s evacuation center overwhelmed! Alternative shelter at misleading-shelter%d.org/register/%s',
+        'CRITICAL: Water contamination in %s area! Test results at fake-health%d.gov/results?zone=%s',
+        'ALERT: Gas leak reported near %s! Safety info at hazard-spoof%d.com/safety?location=%s',
+        'WARNING: Structural collapse imminent at %s! Details at disaster-fake%d.org/alerts?building=%s',
+        'EMERGENCY: Medical supplies shortage in %s! Support at relief-spoof%d.com/supplies?area=%s'
+    };
+    
+    % Technical Spoofing
+    spoofing_categories.technical_spoofing = {
+        'SYSTEM UPDATE: Mesh node requires firmware update from update-server%d.fake/firmware?node=%s',
+        'NETWORK ALERT: Security patch available at patch-distribution%d.spoof/download?device=%s',
+        'PROTOCOL UPDATE: New emergency mesh protocol at protocol-fake%d.net/upgrade?network=%s',
+        'SECURITY SCAN: Malware detected! Clean immediately at antivirus-spoof%d.com/clean?system=%s',
+        'CONFIGURATION CHANGE: Update network settings via config-fake%d.org/update?settings=%s',
+        'DIAGNOSTIC REQUIRED: Run network test at network-spoof%d.com/diagnostic?test=%s'
+    };
+    
+    % Identity Theft Patterns
+    spoofing_categories.identity_theft = {
+        'VERIFICATION: Confirm identity for family reunion database at family-finder%d.fake/verify?person=%s',
+        'REGISTRATION: Emergency contact system requires details at contact-spoof%d.org/register?emergency=%s',
+        'DATABASE UPDATE: Personal info verification needed at citizen-fake%d.gov/update?citizen=%s',
+        'INSURANCE CLAIM: Disaster insurance requires documents at insurance-spoof%d.com/claim?policy=%s',
+        'BENEFIT ENROLLMENT: Emergency aid signup at disaster-benefits%d.fake/enroll?applicant=%s',
+        'MEDICAL RECORD: Health emergency requires verification at medical-spoof%d.org/records?patient=%s'
+    };
+    
+    % Advanced Persistent Spoofing
+    spoofing_categories.persistent_spoofing = {
+        'LONG-TERM SUPPORT: Register for ongoing disaster updates at updates-fake%d.com/subscribe?user=%s',
+        'COMMUNITY PORTAL: Join neighborhood recovery network at community-spoof%d.org/join?resident=%s',
+        'VOLUNTEER REGISTRY: Sign up for extended relief efforts at volunteer-fake%d.net/register?helper=%s',
+        'RECONSTRUCTION PLANNING: Participate in rebuilding initiative at rebuild-spoof%d.com/participate?member=%s',
+        'RECOVERY COORDINATION: Long-term aid management at recovery-fake%d.org/manage?coordinator=%s',
+        'MENTAL HEALTH SUPPORT: Ongoing counseling services at therapy-spoof%d.com/support?client=%s'
+    };
+    
+    % Select category based on current time or node parameters  
+    categories = fieldnames(spoofing_categories);
+    if isfield(node, 'last_attack_time')
+        % Rotate categories based on time to add variety
+        time_factor = mod(floor(node.last_attack_time / 300), length(categories)) + 1; % Change every 5 minutes
+        selected_category = categories{time_factor};
+    else
+        selected_category = categories{randi(length(categories))};
     end
     
-    content = sprintf(template, random_num, random_token);
+    templates = spoofing_categories.(selected_category);
+    template = templates{randi(length(templates))};
     
-    % Add extra suspicious elements
-    if rand() < 0.5
-        content = [content, sprintf(' [URGENT_CODE: %d]', randi(99999))];
+    % Generate convincing fake data
+    fake_names = {'Johnson', 'Smith', 'Williams', 'Brown', 'Davis', 'Miller', 'Wilson', 'Taylor', 'Anderson', 'Thomas'};
+    fake_locations = {'Downtown', 'Riverside', 'Hillside', 'Central District', 'North Zone', 'South Sector'};
+    
+    % Create random parameters with high entropy
+    random_num = 1000 + randi(8999); % 4-digit number
+    
+    % Generate complex token with mixed characters
+    token_chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    token = '';
+    token_length = 12 + randi(8); % 12-20 character token
+    for i = 1:token_length
+        token = [token, token_chars(randi(length(token_chars)))];
     end
+    
+    % Select random name and location
+    fake_name = fake_names{randi(length(fake_names))};
+    fake_location = fake_locations{randi(length(fake_locations))};
+    
+    % Format the spoofing message based on template
+    if contains(template, '%s') && contains(template, '%d')
+        % Template requires both string and number
+        if sum(template == '%') == 3 % Three parameters
+            content = sprintf(template, fake_name, random_num, token);
+        elseif sum(template == '%') == 2 % Two parameters  
+            if strfind(template, '%s') < strfind(template, '%d')
+                content = sprintf(template, fake_location, random_num);
+            else
+                content = sprintf(template, random_num, token);
+            end
+        end
+    else
+        content = template;
+    end
+    
+    % Add suspicious elements to increase detection difficulty
+    suspicious_elements = {
+        sprintf(' [AUTH_CODE: %06d]', randi(999999)),
+        sprintf(' Reference: #%s', upper(token(1:min(8, length(token))))),
+        sprintf(' Priority Level: %d', randi(5)),
+        sprintf(' Case ID: %04X-%04X', randi(65535), randi(65535)),
+        sprintf(' Verification: %s%04d', token_chars(randi(26)), randi(9999))
+    };
+    
+    % Add 1-2 suspicious elements
+    num_elements = 1 + randi(2);
+    selected_elements = suspicious_elements(randperm(length(suspicious_elements), num_elements));
+    
+    for i = 1:length(selected_elements)
+        content = [content, selected_elements{i}];
+    end
+    
+    % Add timestamp for realism
+    if rand() < 0.4 % 40% chance
+        fake_timestamp = sprintf(' [Sent: %02d/%02d %02d:%02d]', ...
+            randi(12), randi(28), randi(24)-1, randi(60)-1);
+        content = [content, fake_timestamp];
+    end
+    
+    % Add spoofing signature (hidden)
+    spoof_signature = sprintf(' [SPOOF_ID_%04X_CAT_%s]', randi(65535), selected_category);
+    content = [content, spoof_signature];
 end
-end
-
-
-
-
-
-
-
-
-
-
 
 function content = generateNormalMessage()
-    % Emergency chat messages during disaster scenarios
+    % Enhanced emergency chat messages with more variety and complexity
     message_categories = struct();
     
-    % Emergency Coordination (High Priority/Frequency)
+    % Emergency Coordination (High Priority/Frequency) - EXPANDED
     message_categories.emergency_coordination = {
         'Family group: Everyone check in! Are you all safe?',
         'Dad: I''m okay, stuck at office building but safe',
@@ -1488,10 +2215,24 @@ function content = generateNormalMessage()
         'URGENT: Missing person - has anyone seen little Tommy?',
         'Group: Water rising fast, evacuate NOW if you''re in Zone 3',
         'Alert: Power lines down on Main St, stay away!',
-        'SOS: Trapped in basement, water coming in, send help!'
+        'SOS: Trapped in basement, water coming in, send help!',
+        % NEW ADDITIONS for variety
+        'Urgent coordination: Assembly point moved to Central Park due to flooding',
+        'Family reunion: Meet at Fire Station #7 if separated',
+        'Critical update: Bridge at Miller St is collapsing - avoid area!',
+        'Emergency relay: Need medical personnel at evacuation center NOW',
+        'Rescue priority: Children trapped at Roosevelt Elementary School',
+        'Safety alert: Gas leak reported on 5th Avenue, evacuate immediately',
+        'Communication hub: Ham radio operators needed at command center',
+        'Search coordination: Missing elderly woman, blue coat, answers to Mary',
+        'Emergency shelter: Community center full, redirecting to high school',
+        'Medical emergency: Diabetic child needs insulin at shelter B',
+        'Transport urgent: Pregnant woman in labor needs hospital access',
+        'Resource critical: Running low on oxygen tanks at medical station',
+        'Evacuation notice: Dam spillway opening in 30 minutes - move to high ground'
     };
     
-    % Safety Status Updates (High Frequency)
+    % Safety Status Updates (High Frequency) - EXPANDED
     message_categories.safety_status = {
         'Status: I''m safe at the school gym shelter',
         'Update: Made it to higher ground, phone battery at 30%',
@@ -1502,10 +2243,24 @@ function content = generateNormalMessage()
         'Status update: Car stuck but walking to safety',
         'All good: Found shelter in community building',
         'Safe zone: Made it to the hill, can see flooding below',
-        'Secure: In emergency bunker with 20 other people'
+        'Secure: In emergency bunker with 20 other people',
+        % NEW ADDITIONS
+        'Check-in: All family members accounted for at Riverside shelter',
+        'Status good: Temporary housing secured, have basic supplies',
+        'Update positive: Injuries treated, recovery going well',
+        'Safe location: Staying with relatives outside flood zone',
+        'Current position: GPS coordinates 40.7589, -73.9851 - safe area',
+        'Health status: Minor cuts treated, no serious injuries',
+        'Shelter report: Adequate food and water, morale holding up',
+        'Safety confirmed: All team members present and unharmed',
+        'Location secure: High ground position, good visibility',
+        'Status nominal: Power restored in our sector, communications good',
+        'Welfare check: Elderly parents safe at assisted living facility',
+        'Group status: 12 people safe in basement shelter, supplies adequate',
+        'Recovery update: Clean water access restored, sanitation improving'
     };
     
-    % Resource Requests (Medium Frequency)
+    % Resource Requests (Medium Frequency) - EXPANDED  
     message_categories.resource_requests = {
         'Need: Running out of water, any nearby distribution points?',
         'Help: Baby formula needed urgently at women''s shelter',
@@ -1516,10 +2271,26 @@ function content = generateNormalMessage()
         'Generator: Power out for 2 days, need to charge phones',
         'Medical: First aid supplies needed at apartment complex',
         'Fuel: Car almost empty, any gas stations open?',
-        'Information: Which roads are still passable?'
+        'Information: Which roads are still passable?',
+        % NEW ADDITIONS
+        'Request urgent: Insulin needed for Type 1 diabetic, running low',
+        'Supplies needed: Blankets and warm clothes for 15 children',
+        'Medical request: Blood pressure medication for cardiac patient',
+        'Food assistance: Gluten-free options for celiac child',
+        'Equipment need: Wheelchair accessible vehicle for transport',
+        'Communication help: Satellite phone to contact relatives abroad',
+        'Shelter space: Family with newborn needs quiet, clean area',
+        'Technical support: Radio equipment repair - have spare parts?',
+        'Medical urgent: Epinephrine auto-injector for severe allergic reaction',
+        'Resource sharing: Extra solar chargers available for trade',
+        'Transportation: Boat needed to reach stranded residents',
+        'Supplies critical: Water purification tablets running low',
+        'Equipment request: Chainsaw operator needed to clear blocked roads',
+        'Medical supplies: Bandages and antiseptic for wound care',
+        'Food distribution: Vegetarian meals needed at shelter C'
     };
     
-    % Rescue Coordination (Medium Frequency)
+    % Rescue Coordination (Medium Frequency) - EXPANDED
     message_categories.rescue_coordination = {
         'Rescue: Boat available to help evacuate people',
         'Volunteer: Doctor here, can provide medical assistance',
@@ -1530,10 +2301,26 @@ function content = generateNormalMessage()
         'Search: Organizing search party for missing residents',
         'Coordination: Meeting at fire station to plan rescue ops',
         'Skills: Electrician available for emergency repairs',
-        'Equipment: Have rope and tools for rescue operations'
+        'Equipment: Have rope and tools for rescue operations',
+        % NEW ADDITIONS
+        'Rescue team: Swift water rescue unit deploying to residential area',
+        'Medical support: Trauma surgeon available at field hospital',
+        'Technical assistance: Engineer assessing structural damage',
+        'Transport coordination: School bus convoy organizing evacuation routes',
+        'Communication relay: Setting up mesh network for emergency services',
+        'Search and rescue: Drone operators mapping flooded areas',
+        'Supply distribution: Food truck stationed at Main St & 3rd Ave',
+        'Medical evacuation: Helicopter landing zone established at park',
+        'Emergency services: Paramedic team standing by for critical cases',
+        'Utility repair: Electrical crew working to restore power grid',
+        'Water rescue: Coast Guard auxiliary boats patrolling river',
+        'Animal rescue: Veterinary team helping with pet evacuations',
+        'Logistics support: Coordinating supply deliveries to shelters',
+        'Security patrol: Volunteers monitoring evacuation areas',
+        'Mental health: Counselors available for trauma support'
     };
     
-    % Information Sharing (Low Frequency)
+    % Information Sharing (Low Frequency) - EXPANDED
     message_categories.information_sharing = {
         'Info: Evacuation buses running every 30 minutes',
         'Update: Airport closed, all flights cancelled',
@@ -1544,12 +2331,56 @@ function content = generateNormalMessage()
         'Warning: Avoid downtown area, buildings unstable',
         'Notice: Curfew in effect from 8pm to 6am',
         'Alert: Boil water advisory for entire district',
-        'Broadcast: Government aid arriving tomorrow morning'
+        'Broadcast: Government aid arriving tomorrow morning',
+        % NEW ADDITIONS
+        'Weather update: Storm surge warning extended through 6 AM',
+        'Traffic advisory: Highway 101 reopened with lane restrictions',
+        'Service notice: Cell towers restored in sectors 7-12',
+        'Public health: Tetanus vaccination station set up at clinic',
+        'Infrastructure: Water treatment plant back online, pressure low',
+        'Emergency broadcast: FEMA disaster relief center opening Monday',
+        'Transportation: Ferry service suspended due to high winds',
+        'Utility update: Natural gas service shut off preventively',
+        'Communication: Internet service restored in northern districts',
+        'Weather forecast: Flooding expected to peak at 3 PM today',
+        'Official notice: National Guard units arriving for assistance',
+        'Health alert: Boil water order may last 48-72 hours',
+        'Transportation: Train service suspended indefinitely',
+        'Emergency services: Additional ambulances en route from nearby counties',
+        'Infrastructure report: Power restoration estimated 5-7 days for most areas'
+    };
+    
+    % NEW CATEGORY: Technical/Operational Messages
+    message_categories.technical_operational = {
+        'System status: Backup generators operating at 85% capacity',
+        'Network diagnostic: Mesh node #47 offline, rerouting traffic',
+        'Equipment check: Radio frequency 146.520 clear for emergency use',
+        'Technical update: Satellite uplink established, data transmission stable',
+        'Operational report: Search grid Delta-7 completed, no survivors found',
+        'System alert: Battery backup systems switching to conservation mode',
+        'Network maintenance: Mesh topology reconfigured for optimal coverage',
+        'Technical support: Software update pushed to all emergency devices',
+        'Operational status: Command center Alpha operational, Bravo relocating',
+        'System notification: GPS tracking active for all rescue vehicles'
+    };
+    
+    % NEW CATEGORY: Social/Morale Messages  
+    message_categories.social_morale = {
+        'Community: Prayer circle forming at 7 PM in shelter common area',
+        'Morale boost: Local restaurant donating hot meals to volunteers',
+        'Social support: Childcare available so parents can help with rescue',
+        'Community spirit: Neighbors sharing generators and supplies',
+        'Emotional support: Therapy dogs arriving tomorrow for stress relief',
+        'Social coordination: Planning community cleanup when waters recede',
+        'Morale message: We''re stronger together - this too shall pass',
+        'Community aid: Local church organizing clothing drive',
+        'Social activity: Story time for children at 3 PM in shelter B',
+        'Community support: Volunteer appreciation dinner planned for Friday'
     };
     
     % Select category based on disaster communication patterns
     categories = fieldnames(message_categories);
-    category_weights = [0.30, 0.25, 0.20, 0.15, 0.10]; % Emergency coordination most frequent
+    category_weights = [0.35, 0.25, 0.15, 0.12, 0.08, 0.03, 0.02]; % Emergency coordination most frequent
     
     rand_val = rand();
     cumsum_weights = cumsum(category_weights);
@@ -1557,7 +2388,40 @@ function content = generateNormalMessage()
     selected_category = categories{category_idx};
     
     messages = message_categories.(selected_category);
-    content = messages{randi(length(messages))};
+    base_content = messages{randi(length(messages))};
+    
+    % Add variability with timestamps, locations, and numbers
+    content = addMessageVariability(base_content);
+end
+
+function content = addMessageVariability(base_content)
+    % Add realistic variability to make messages more unique
+    content = base_content;
+    
+    % 30% chance to add timestamp
+    if rand() < 0.3
+        time_str = sprintf(' [%02d:%02d]', randi(24)-1, randi(60)-1);
+        content = [content, time_str];
+    end
+    
+    % 20% chance to add location reference
+    if rand() < 0.2
+        locations = {'Zone A', 'Sector 4', 'Grid 7-B', 'Area North', 'District 3', 'Block 15'};
+        location_str = sprintf(' (%s)', locations{randi(length(locations))});
+        content = [content, location_str];
+    end
+    
+    % 15% chance to add urgency modifier
+    if rand() < 0.15
+        urgency = {'*URGENT*', '**PRIORITY**', '[IMMEDIATE]', '***TIME SENSITIVE***'};
+        content = [urgency{randi(length(urgency))}, ' ', content];
+    end
+    
+    % 10% chance to add contact info
+    if rand() < 0.1
+        contact_str = sprintf(' Contact: %d', 1000 + randi(9000));
+        content = [content, contact_str];
+    end
 end
 function message_id = generateMessageID()
     persistent counter;
