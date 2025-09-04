@@ -11,8 +11,8 @@ global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION
 NUM_NORMAL_NODES = 35;
 NUM_ATTACK_NODES = 6;
 TOTAL_NODES = NUM_NORMAL_NODES + NUM_ATTACK_NODES;
-MESSAGE_INTERVAL = 10; % seconds - REDUCED from 60 to generate more messages
-SIMULATION_TIME = 50 * 60; % 5 minutes for better forwarding analysis
+MESSAGE_INTERVAL = 15; % seconds - REDUCED from 60 to generate more messages
+SIMULATION_TIME = 15 * 60; % 5 minutes for better forwarding analysis
 TRANSMISSION_RANGE = 50; % meterss
 AREA_SIZE = 400; % 200x200 meter area
 
@@ -34,8 +34,9 @@ function node = createAttackerNode(id, x, y)
     node.battery_level = 0.9 + 0.1 * rand(); % 90-100%
     node.processing_power = 0.8 + 0.2 * rand(); % 80-100%
     node.neighbors = [];
-    node.message_buffer = {};
-    node.max_buffer_bytes = 4096; % Realistic buffer size limit (bytes)
+    % Enhanced timestamp-organized buffer structure (tracks buffer entry time, not message creation time)
+    node.message_buffer = struct('messages', {{}}, 'buffer_entry_times', [], 'total_bytes', 0);
+    node.max_buffer_bytes = 8192; % Increased buffer size to 8KB for better resilience
     node.routing_table = containers.Map();
     node.reputation_scores = containers.Map();
     node.message_history = {};
@@ -50,6 +51,7 @@ function node = createAttackerNode(id, x, y)
     node.target_nodes = [];
     node.message_cache = containers.Map();
     node.cache_duration = 20;
+    node.buffer_ttl = 10; % More aggressive: Messages expire from buffer after 10 seconds
     node.attack_params = struct(); % Will be populated by advanced attacker function
     
     % Initialize tracking fields for dynamic features
@@ -67,8 +69,9 @@ function node = createNormalNode(id, x, y)
     node.battery_level = 0.8 + 0.2 * rand(); % 80-100%
     node.processing_power = 0.7 + 0.3 * rand(); % 70-100%
     node.neighbors = [];
-    node.message_buffer = {};
-    node.max_buffer_bytes = 4096; % Realistic buffer size limit (bytes)
+    % Enhanced timestamp-organized buffer structure (tracks buffer entry time, not message creation time)
+    node.message_buffer = struct('messages', {{}}, 'buffer_entry_times', [], 'total_bytes', 0);
+    node.max_buffer_bytes = 8192; % Increased buffer size to 8KB for better resilience
     node.routing_table = containers.Map();
     node.reputation_scores = containers.Map();
     node.message_history = {};
@@ -87,6 +90,7 @@ function node = createNormalNode(id, x, y)
     node.target_nodes = [];
     node.message_cache = containers.Map();
     node.cache_duration = 20;
+    node.buffer_ttl = 10; % More aggressive: Messages expire from buffer after 10 seconds
     node.attack_params = struct(); % Empty struct for normal nodes
     
     % Initialize tracking fields for dynamic features
@@ -264,14 +268,36 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
     fprintf('Message %s: From Node %d → To Node %d (new)\n', ...
         message.id, message.source_id, node.id);
 
-    % Enforce buffer size limit (by total bytes)
-    current_bytes = sum(cellfun(@(msg) length(msg.content), node.message_buffer));
-    if current_bytes + length(message.content) > node.max_buffer_bytes
+    % Clean up expired messages from buffer before checking capacity
+    node = cleanupMessageBuffer(node, current_time);
+
+    % Enforce buffer size limit (by total bytes) using new structure
+    if node.message_buffer.total_bytes + length(message.content) > node.max_buffer_bytes
         fprintf('Node %d buffer full (bytes)! Dropping message %s\n', node.id, message.id);
         return;
     end
-    % Store message in buffer
-    node.message_buffer{end+1} = message;
+    
+    % Store message in buffer organized by buffer entry time (not message creation time)
+    message_size = length(message.content);
+    buffer_entry_time = current_time; % Use current time as buffer entry time
+    
+    % Find insertion point to maintain buffer entry time order
+    insert_pos = length(node.message_buffer.buffer_entry_times) + 1;
+    for i = 1:length(node.message_buffer.buffer_entry_times)
+        if buffer_entry_time <= node.message_buffer.buffer_entry_times(i)
+            insert_pos = i;
+            break;
+        end
+    end
+    
+    % Insert message maintaining buffer entry time order
+    node.message_buffer.messages = [node.message_buffer.messages(1:insert_pos-1), ...
+                                   {message}, ...
+                                   node.message_buffer.messages(insert_pos:end)];
+    node.message_buffer.buffer_entry_times = [node.message_buffer.buffer_entry_times(1:insert_pos-1), ...
+                                     buffer_entry_time, ...
+                                     node.message_buffer.buffer_entry_times(insert_pos:end)];
+    node.message_buffer.total_bytes = node.message_buffer.total_bytes + message_size;
     node.message_history{end+1} = message;
 
     % Update received count for forwarding behavior tracking
@@ -704,11 +730,10 @@ function features = extractMessageFeatures(node, message, sender_node, current_t
     end
     
     % Memory footprint - higher for Resource Exhaustion
-    if isempty(node.message_buffer)
+    if isempty(node.message_buffer.messages)
         base_memory = 0;
     else
-        total_bytes = sum(cellfun(@(msg) length(msg.content), node.message_buffer));
-        base_memory = min(1, total_bytes / node.max_buffer_bytes);
+        base_memory = min(1, node.message_buffer.total_bytes / node.max_buffer_bytes);
     end
     
     if strcmp(attack_type, 'RESOURCE_EXHAUSTION')
@@ -1297,11 +1322,12 @@ end
 
 function load = calculateProcessingLoad(node)
     % Improved: processing load based on total message size in buffer
-    if isempty(node.message_buffer)
+    if isempty(node.message_buffer.messages)
         load = 0;
         return;
     end
-    total_bytes = sum(cellfun(@(msg) length(msg.content), node.message_buffer));
+    % Use the pre-calculated total_bytes from organized buffer
+    total_bytes = node.message_buffer.total_bytes;
     % Assume node.processing_power is in bytes/sec (simulate 1000 bytes/sec typical)
     if ~isfield(node, 'processing_power') || isempty(node.processing_power)
         node.processing_power = 1.0; % fallback
@@ -2968,6 +2994,46 @@ function node = cleanupMessageCache(node, current_time)
     end
 end
 
+function node = cleanupMessageBuffer(node, current_time)
+    % Optimized cleanup based on buffer entry time (how long message has been in buffer)
+    if isempty(node.message_buffer.messages)
+        return;
+    end
+    
+    % Since messages are buffer-entry-time-ordered, find cutoff point efficiently
+    cutoff_time = current_time - node.buffer_ttl;
+    
+    % Binary search or simple scan to find first message that hasn't been in buffer too long
+    keep_from_index = 1;
+    for i = 1:length(node.message_buffer.buffer_entry_times)
+        if node.message_buffer.buffer_entry_times(i) > cutoff_time
+            keep_from_index = i;
+            break;
+        end
+        keep_from_index = i + 1;  % All messages expire, keep none
+    end
+    
+    % Calculate expired count and reclaim bytes
+    expired_count = keep_from_index - 1;
+    bytes_freed = 0;
+    
+    if expired_count > 0
+        % Calculate bytes freed from expired messages
+        for i = 1:expired_count
+            bytes_freed = bytes_freed + length(node.message_buffer.messages{i}.content);
+        end
+        
+        % Remove expired messages efficiently (slice arrays)
+        node.message_buffer.messages = node.message_buffer.messages(keep_from_index:end);
+        node.message_buffer.buffer_entry_times = node.message_buffer.buffer_entry_times(keep_from_index:end);
+        node.message_buffer.total_bytes = node.message_buffer.total_bytes - bytes_freed;
+        
+        % Log cleanup with more details
+        fprintf('BUFFER CLEANUP: Node %d cleaned %d messages (in buffer >%.0fs, freed %d bytes, current_time=%.0fs)\n', ...
+            node.id, expired_count, node.buffer_ttl, bytes_freed, current_time);
+    end
+end
+
 function has_message = nodeHasMessage(node, message_id)
     % Check if node already has this message in cache
     has_message = isKey(node.message_cache, message_id);
@@ -3337,12 +3403,13 @@ function runBluetoothMeshSimulation()
         end
         
         % Enhanced message propagation with caching and duplicate detection
-        if mod(current_time, 5) == 0  % Check every 5 seconds
+        if mod(current_time, 1) == 0  % Check every 1 second for more frequent cleanup
             
-            % Clean up expired messages from all nodes
+            % Clean up expired messages from all nodes (both cache and buffer)
             for i = 1:length(nodes)
                 if nodes(i).is_active
                     nodes(i) = cleanupMessageCache(nodes(i), current_time);
+                    nodes(i) = cleanupMessageBuffer(nodes(i), current_time);
                 end
             end
             
