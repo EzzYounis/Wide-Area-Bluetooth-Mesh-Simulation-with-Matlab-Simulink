@@ -171,12 +171,14 @@ function ids_model = trainRandomForestModel(ids_model)
             'InBagFraction', 0.7);
         
         ids_model.model_loaded = true;
+        ids_model.model_type = 'MATLAB';
         fprintf('Random Forest model trained successfully\n');
         
     catch ME
         fprintf('Failed to train Random Forest: %s\n', ME.message);
         fprintf('Using simplified simulation model instead\n');
         ids_model.model_loaded = false;
+        ids_model.model_type = 'SIMULATION';
     end
 end
 
@@ -1376,20 +1378,76 @@ end
 function [is_attack, attack_type, confidence] = predictAttack(ids_model, features)
     if ids_model.model_loaded
         try
-            % Predict using Random Forest
-            [prediction, scores] = predict(ids_model.rf_model, features);
-            attack_type = prediction{1}; % TreeBagger returns cell array
+            % Use the appropriate model type
+            switch ids_model.model_type
+                case 'PYTHON'
+                    [is_attack, attack_type, confidence] = predictWithPython(ids_model, features);
+                    
+                case 'MATLAB'
+                    % Use MATLAB TreeBagger
+                    [prediction, scores] = predict(ids_model.rf_model, features);
+                    attack_type = prediction{1}; % TreeBagger returns cell array
+                    confidence = max(scores);
+                    is_attack = ~strcmp(attack_type, 'NORMAL');
+                    
+                otherwise
+                    % Fallback to simulation
+                    [is_attack, attack_type, confidence] = simulateDetection(ids_model, features);
+            end
             
-            % Calculate confidence from voting scores
-            confidence = max(scores);
-            is_attack = ~strcmp(attack_type, 'NORMAL');
-            
-        catch
+        catch ME
+            fprintf('⚠️  Model prediction failed: %s\n', ME.message);
             % Fallback to simulation model
             [is_attack, attack_type, confidence] = simulateDetection(ids_model, features);
         end
     else
         % Use simplified simulation model
+        [is_attack, attack_type, confidence] = simulateDetection(ids_model, features);
+    end
+end
+
+function [is_attack, attack_type, confidence] = predictWithPython(ids_model, features)
+    % Predict using Python Random Forest model
+    try
+        % Get the model components
+        if isa(ids_model.python_model, 'py.dict')
+            rf_model = ids_model.python_model{'model'};
+            label_encoder = ids_model.python_model{'label_encoder'};
+        else
+            rf_model = ids_model.python_model.model;
+            label_encoder = ids_model.python_model.label_encoder;
+        end
+        
+        % Convert features to Python format
+        py_features = py.numpy.array(features);
+        py_features = py_features.reshape(int32(1), int32(length(features))); % Reshape to 2D
+        
+        % Make prediction
+        py_prediction = rf_model.predict(py_features);
+        py_probabilities = rf_model.predict_proba(py_features);
+        
+        % Convert back to MATLAB
+        predicted_class = double(py_prediction{1});
+        probabilities = double(py_probabilities);
+        confidence = max(probabilities);
+        
+        % Get attack type name
+        if isa(label_encoder, 'py.sklearn.preprocessing._label.LabelEncoder')
+            class_names = string(label_encoder.classes_);
+            attack_type = char(class_names(predicted_class + 1)); % Python is 0-indexed
+        else
+            % Fallback to predefined attack types
+            attack_type = ids_model.attack_types{predicted_class + 1};
+        end
+        
+        is_attack = ~strcmp(attack_type, 'NORMAL');
+        
+        % Optional: Show prediction details (can be commented out for less verbose output)
+        % fprintf('🤖 Python RF: %s (conf: %.3f)\n', attack_type, confidence);
+        
+    catch ME
+        fprintf('⚠️  Python prediction error: %s\n', ME.message);
+        % Fallback to simulation
         [is_attack, attack_type, confidence] = simulateDetection(ids_model, features);
     end
 end
@@ -2978,6 +3036,132 @@ function saveSimulationResults(nodes, stats_history)
     end
 end
 
+function ids_model = loadPretrainedModel(ids_model)
+    % Load pre-trained Random Forest model from Python training scripts
+    try
+        fprintf('🔍 Loading pre-trained Python Random Forest model...\n');
+        
+        % Look for Python model files from our training scripts
+        fprintf('📁 Searching for Python model files...\n');
+        
+        % Search patterns for our trained models
+        search_patterns = {
+            'models/bluetooth_mesh_ids_rf_*.joblib',  % Primary pattern from train_rf_model.py
+            'models/fast_rf_model_*.joblib',          % Pattern from train_rf_model_fast.py
+            'models/matlab_rf_model_*.pkl',           % MATLAB-compatible pickle files
+            'bluetooth_mesh_ids_rf_*.joblib',         % In case models are in main directory
+            'fast_rf_model_*.joblib',                 % Fast model in main directory
+            'models/*rf*.joblib',                     % Any RF joblib file in models
+            'models/*rf*.pkl',                        % Any RF pickle file in models
+            '*rf*.joblib',                            % Any RF joblib file
+            '*rf*.pkl'                                % Any RF pickle file
+        };
+        
+        model_files = [];
+        for i = 1:length(search_patterns)
+            pattern_files = dir(search_patterns{i});
+            if ~isempty(pattern_files)
+                fprintf('   Found %d files matching pattern: %s\n', length(pattern_files), search_patterns{i});
+                model_files = [model_files; pattern_files];
+            end
+        end
+        
+        if ~isempty(model_files)
+            % Sort by date and take the newest
+            [~, newest_idx] = max([model_files.datenum]);
+            model_path = fullfile(model_files(newest_idx).folder, model_files(newest_idx).name);
+            fprintf('🎯 Selected newest model: %s\n', model_path);
+            fprintf('📅 Model date: %s\n', datestr(model_files(newest_idx).datenum));
+            
+            % Initialize Python environment
+            try
+                fprintf('🐍 Initializing Python environment...\n');
+                py.sys.path.insert(int32(0), pwd);
+                
+                % Try to import required modules
+                py.importlib.import_module('joblib');
+                py.importlib.import_module('pickle');
+                py.importlib.import_module('numpy');
+                fprintf('✅ Python modules imported successfully\n');
+                
+            catch ME
+                fprintf('⚠️  Python environment setup failed: %s\n', ME.message);
+                fprintf('💡 Make sure Python, joblib, and numpy are installed\n');
+                error('Python environment not ready');
+            end
+            
+            % Load the model
+            try
+                fprintf('📦 Loading model file...\n');
+                
+                if contains(model_path, '.joblib')
+                    fprintf('   Using joblib loader...\n');
+                    model_package = py.joblib.load(model_path);
+                else
+                    fprintf('   Using pickle loader...\n');
+                    py_file = py.open(model_path, 'rb');
+                    model_package = py.pickle.load(py_file);
+                    py_file.close();
+                end
+                
+                % Store the model
+                ids_model.python_model = model_package;
+                ids_model.model_loaded = true;
+                ids_model.model_type = 'PYTHON';
+                ids_model.model_path = model_path;
+                
+                fprintf('✅ Python Random Forest model loaded successfully!\n');
+                fprintf('📊 Model type: PYTHON\n');
+                fprintf('📁 Model file: %s\n', model_path);
+                
+                % Try to get model info
+                try
+                    if isa(model_package, 'py.dict')
+                        rf_model = model_package{'model'};
+                        label_encoder = model_package{'label_encoder'};
+                        feature_names = model_package{'feature_names'};
+                    else
+                        rf_model = model_package.model;
+                        label_encoder = model_package.label_encoder;
+                        feature_names = model_package.feature_names;
+                    end
+                    
+                    fprintf('🌳 Model details:\n');
+                    fprintf('   - Estimators: %s\n', char(string(rf_model.n_estimators)));
+                    fprintf('   - Features: %s\n', char(string(length(feature_names))));
+                    fprintf('   - Classes: %s\n', char(string(length(label_encoder.classes_))));
+                    
+                catch
+                    fprintf('📋 Model loaded (details not accessible)\n');
+                end
+                
+                return;
+                
+            catch ME
+                fprintf('❌ Failed to load model file: %s\n', ME.message);
+                % Continue to fallback
+            end
+            
+        else
+            fprintf('⚠️  No Python model files found!\n');
+            fprintf('💡 Expected files from train_rf_model.py or train_rf_model_fast.py:\n');
+            fprintf('   - models/bluetooth_mesh_ids_rf_YYYYMMDD_HHMMSS.joblib\n');
+            fprintf('   - models/fast_rf_model_YYYYMMDD_HHMMSS.joblib\n');
+            fprintf('   - models/matlab_rf_model_YYYYMMDD_HHMMSS.pkl\n');
+        end
+        
+        % Fallback: Train MATLAB model
+        fprintf('🔄 Falling back to training MATLAB TreeBagger model...\n');
+        ids_model = trainRandomForestModel(ids_model);
+        
+    catch ME
+        fprintf('❌ Model loading failed: %s\n', ME.message);
+        fprintf('🔄 Using simplified simulation model instead\n');
+        ids_model.model_loaded = false;
+        ids_model.model_type = 'SIMULATION';
+    end
+end
+
 function shared_model = createSharedIDSModel()
     shared_model = struct();
     shared_model.model_loaded = false;
@@ -2990,8 +3174,8 @@ function shared_model = createSharedIDSModel()
     shared_model.ai_confidence_threshold = 0.4;   % Reduced from 0.6 to 0.4
     shared_model.fusion_weights = struct('rule_weight', 0.5, 'ai_weight', 0.5);  % Balanced weights
     
-    % Train once for all nodes
-    shared_model = trainRandomForestModel(shared_model);
+    % Load pre-trained model instead of training new one
+    shared_model = loadPretrainedModel(shared_model);
 end
 function node = cleanupMessageCache(node, current_time)
     message_ids = keys(node.message_cache);
