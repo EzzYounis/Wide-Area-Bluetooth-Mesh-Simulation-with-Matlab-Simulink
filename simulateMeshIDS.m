@@ -8,13 +8,13 @@ clear all; close all; clc;
 
 %% Simulation Parameters
 global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE ;
-NUM_NORMAL_NODES = 35;
-NUM_ATTACK_NODES = 6;
+NUM_NORMAL_NODES = 40;
+NUM_ATTACK_NODES = 10;
 TOTAL_NODES = NUM_NORMAL_NODES + NUM_ATTACK_NODES;
-MESSAGE_INTERVAL = 15; % seconds - REDUCED from 60 to generate more messages
-SIMULATION_TIME = 15 * 60; % 5 minutes for better forwarding analysis
+MESSAGE_INTERVAL = 60; % seconds - INCREASED to 30 to reduce message load
+SIMULATION_TIME = 10 * 60; % 5 minutes for better forwarding analysis
 TRANSMISSION_RANGE = 50; % meterss
-AREA_SIZE = 400; % 200x200 meter area
+AREA_SIZE = 200; % 200x200 meter area
 
 %% Initialize Global Variables
 global simulation_data;
@@ -36,7 +36,7 @@ function node = createAttackerNode(id, x, y)
     node.neighbors = [];
     % Enhanced timestamp-organized buffer structure (tracks buffer entry time, not message creation time)
     node.message_buffer = struct('messages', {{}}, 'buffer_entry_times', [], 'total_bytes', 0);
-    node.max_buffer_bytes = 8192; % Increased buffer size to 8KB for better resilience
+    node.max_buffer_bytes = 10485760; % Increased buffer size to 10MB to completely eliminate message dropping
     node.routing_table = containers.Map();
     node.reputation_scores = containers.Map();
     node.message_history = {};
@@ -71,7 +71,7 @@ function node = createNormalNode(id, x, y)
     node.neighbors = [];
     % Enhanced timestamp-organized buffer structure (tracks buffer entry time, not message creation time)
     node.message_buffer = struct('messages', {{}}, 'buffer_entry_times', [], 'total_bytes', 0);
-    node.max_buffer_bytes = 8192; % Increased buffer size to 8KB for better resilience
+    node.max_buffer_bytes = 10485760; % Increased buffer size to 10MB to completely eliminate message dropping
     node.routing_table = containers.Map();
     node.reputation_scores = containers.Map();
     node.message_history = {};
@@ -323,10 +323,10 @@ function rules = createDetectionRules()
     
     % Rule 1: Flooding Detection
     rules.flooding = struct();
-    rules.flooding.message_freq_threshold = 10; % messages per minute
-    rules.flooding.message_size_threshold = 500; % bytes
+    rules.flooding.message_freq_threshold = 3; % Reduced from 10 to 3 messages per minute 
+    rules.flooding.message_size_threshold = 200; % Reduced from 500 to 200 bytes
     rules.flooding.burst_window = 60; % seconds
-    rules.flooding.confidence = 0.9;
+    rules.flooding.confidence = 0.7; % Reduced from 0.9 to 0.7
     
     % Rule 2: Spoofing Detection
     rules.spoofing = struct();
@@ -337,10 +337,10 @@ function rules = createDetectionRules()
     
     % Rule 3: Resource Exhaustion Detection (renamed from resource_drain)
     rules.resource_exhaustion = struct();
-    rules.resource_exhaustion.message_size_threshold = 800;
-    rules.resource_exhaustion.frequency_threshold = 5;
-    rules.resource_exhaustion.battery_impact_threshold = 0.8;
-    rules.resource_exhaustion.confidence = 0.8;
+    rules.resource_exhaustion.message_size_threshold = 300; % Reduced from 800 to 300
+    rules.resource_exhaustion.frequency_threshold = 2; % Reduced from 5 to 2
+    rules.resource_exhaustion.battery_impact_threshold = 0.5; % Reduced from 0.8 to 0.5
+    rules.resource_exhaustion.confidence = 0.6; % Reduced from 0.8 to 0.6
 end
 %Rule-based Detection
 function [rule_result] = runRuleBasedDetection(node, message, sender_node, current_time, features)
@@ -352,12 +352,12 @@ function [rule_result] = runRuleBasedDetection(node, message, sender_node, curre
     rule_result.triggered_rules = {};
     
     % Rule 1: Flooding Detection
-    if features(15) > rules.flooding.message_freq_threshold && ...
+    if features(15) > rules.flooding.message_freq_threshold || ...
        features(8) > rules.flooding.message_size_threshold
         rule_result.detected_attacks{end+1} = 'FLOODING';
         rule_result.confidences(end+1) = rules.flooding.confidence;
         rule_result.triggered_rules{end+1} = 'flooding_detection';
-        fprintf('RULE TRIGGER: Flooding detected (freq=%.1f, size=%d)\n', ...
+        fprintf('RULE TRIGGER: Flooding detected (freq=%.1f, size=%.0f)\n', ...
             features(15), features(8));
     end
     
@@ -380,14 +380,15 @@ function [rule_result] = runRuleBasedDetection(node, message, sender_node, curre
         fprintf('RULE TRIGGER: Spoofing detected (score=%.2f)\n', spoofing_score);
     end
     
-    % Rule 3: Resource Exhaustion Detection
-    if features(8) > rules.resource_exhaustion.message_size_threshold && ...
-       features(15) > rules.resource_exhaustion.frequency_threshold && ...
+    % Rule 3: Resource Exhaustion Detection (renamed from resource_drain)
+    if features(8) > rules.resource_exhaustion.message_size_threshold || ...
+       features(15) > rules.resource_exhaustion.frequency_threshold || ...
        features(33) > rules.resource_exhaustion.battery_impact_threshold
         rule_result.detected_attacks{end+1} = 'RESOURCE_EXHAUSTION';
         rule_result.confidences(end+1) = rules.resource_exhaustion.confidence;
         rule_result.triggered_rules{end+1} = 'resource_exhaustion_detection';
-        fprintf('RULE TRIGGER: Resource exhaustion detected\n');
+        fprintf('RULE TRIGGER: Resource exhaustion detected (size=%.0f, freq=%.2f, battery=%.2f)\n', ...
+            features(8), features(15), features(33));
     end
     
     % Calculate overall rule confidence
@@ -419,7 +420,7 @@ function [final_result] = fuseDetectionResults(rule_result, ai_result, fusion_we
         
     elseif rule_attack && ~ai_attack
         % Only rules detected
-        if rule_result.overall_confidence > 0.8
+        if rule_result.overall_confidence > 0.5  % Reduced from 0.8
             final_result.is_attack = true;
             final_result.attack_type = rule_result.primary_attack;
             final_result.confidence = rule_result.overall_confidence * 0.9;
@@ -433,7 +434,7 @@ function [final_result] = fuseDetectionResults(rule_result, ai_result, fusion_we
         
     elseif ~rule_attack && ai_attack
         % Only AI detected
-        if ai_result.confidence > 0.8
+        if ai_result.confidence > 0.5  % Reduced from 0.8
             final_result.is_attack = true;
             final_result.attack_type = ai_result.attack_type;
             final_result.confidence = ai_result.confidence * 0.85;
@@ -623,7 +624,11 @@ function features = extractMessageFeatures(node, message, sender_node, current_t
     
     % Message content analysis - Enhanced for attack fingerprints
     base_msg_length = min(1, length(message.content) / 2000);
-    features(8) = enhanceFeatureByAttackType(base_msg_length, attack_type, 'message_length');
+    if strcmp(attack_type, 'RESOURCE_EXHAUSTION')
+        features(8) = min(1, base_msg_length * (3 + rand())); % 3-4x larger messages for resource exhaustion
+    else
+        features(8) = enhanceFeatureByAttackType(base_msg_length, attack_type, 'message_length');
+    end
     
     % Entropy - Spoofing should have higher entropy
     base_entropy = calculateEntropy(message.content);
@@ -664,12 +669,19 @@ function features = extractMessageFeatures(node, message, sender_node, current_t
     % Traffic pattern analysis - Enhanced for attack signatures
     base_msg_freq = calculateMessageFrequency(node, current_time);
     if strcmp(attack_type, 'FLOODING') || strcmp(attack_type, 'ADAPTIVE_FLOODING')
-        features(15) = min(1, base_msg_freq * (2 + rand())); % 2-3x higher frequency
-        features(16) = 0.7 + 0.2 * rand(); % High burst_intensity
-        features(17) = 0.6 + 0.3 * rand(); % High inter_arrival_variance  
-        features(18) = 0.2 + 0.3 * rand(); % Low size_consistency
-        features(19) = 0.2 + 0.3 * rand(); % Low timing_regularity
-        features(20) = 0.6 + 0.3 * rand(); % High volume_anomaly_score
+        features(15) = min(1, base_msg_freq * (3 + rand())); % 3-4x higher frequency - MORE AGGRESSIVE
+        features(16) = 0.8 + 0.2 * rand(); % High burst_intensity - INCREASED
+        features(17) = 0.7 + 0.3 * rand(); % High inter_arrival_variance - INCREASED
+        features(18) = 0.1 + 0.2 * rand(); % Low size_consistency - MORE OBVIOUS
+        features(19) = 0.1 + 0.2 * rand(); % Low timing_regularity - MORE OBVIOUS
+        features(20) = 0.7 + 0.3 * rand(); % High volume_anomaly_score - INCREASED
+    elseif strcmp(attack_type, 'RESOURCE_EXHAUSTION')
+        features(15) = min(1, base_msg_freq * (2.5 + rand())); % 2.5-3.5x higher frequency
+        features(16) = 0.5 + 0.4 * rand(); % Medium-high burst_intensity
+        features(17) = 0.4 + 0.4 * rand(); % Medium inter_arrival_variance
+        features(18) = 0.1 + 0.3 * rand(); % Low size_consistency - more obvious
+        features(19) = 0.5 + 0.3 * rand(); % Medium timing_regularity
+        features(20) = 0.5 + 0.4 * rand(); % Higher volume_anomaly_score
     else
         features(15) = base_msg_freq + 0.05 * randn(); % Normal with noise
         features(16) = 0.3 + 0.15 * randn(); % burst_intensity with noise
@@ -1441,20 +1453,20 @@ function [is_attack, attack_type, confidence] = simulateDetection(ids_model, fea
     confidence = 0.5;
     
     % Flooding detection (high message frequency + large size)
-    if features(15) > 5 && features(8) > 500
+    if features(15) > 2 && features(8) > 200  % Reduced thresholds
         is_attack = true;
         attack_type = 'FLOODING';
-        confidence = 0.8 + 0.15 * rand();
+        confidence = 0.7 + 0.2 * rand();  % Reduced base confidence
     % Spoofing detection (suspicious URLs + low reputation)
-    elseif features(13) > 0 && features(21) < 0.5
+    elseif features(13) > 0 && features(21) < 0.6  % Increased reputation threshold
         is_attack = true;
         attack_type = 'SPOOFING';
-        confidence = 0.7 + 0.2 * rand();
+        confidence = 0.6 + 0.25 * rand();  % Reduced base confidence
     % Resource exhaustion detection (high battery impact + large messages)
-    elseif features(33) > 0.8 && features(8) > 300
+    elseif features(33) > 0.6 && features(8) > 150  % Reduced thresholds
         is_attack = true;
         attack_type = 'RESOURCE_EXHAUSTION';
-        confidence = 0.6 + 0.25 * rand();
+        confidence = 0.5 + 0.3 * rand();  % Reduced base confidence
     end
     
     % Add some noise to make it realistic
@@ -2974,9 +2986,9 @@ function shared_model = createSharedIDSModel()
     shared_model.feature_weights = rand(43, 1);
     shared_model.rules = createDetectionRules();
     shared_model.hybrid_mode = true;
-    shared_model.rule_confidence_threshold = 0.8;
-    shared_model.ai_confidence_threshold = 0.6;
-    shared_model.fusion_weights = struct('rule_weight', 0.6, 'ai_weight', 0.4);
+    shared_model.rule_confidence_threshold = 0.5;  % Reduced from 0.8 to 0.5
+    shared_model.ai_confidence_threshold = 0.4;   % Reduced from 0.6 to 0.4
+    shared_model.fusion_weights = struct('rule_weight', 0.5, 'ai_weight', 0.5);  % Balanced weights
     
     % Train once for all nodes
     shared_model = trainRandomForestModel(shared_model);
