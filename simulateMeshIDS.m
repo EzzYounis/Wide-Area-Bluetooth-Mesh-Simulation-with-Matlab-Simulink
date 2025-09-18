@@ -46,12 +46,12 @@ function node = createAttackerNode(id, x, y)
     % Attacker-specific properties
     strategies = {'FLOODING', 'ADAPTIVE_FLOODING', 'RESOURCE_EXHAUSTION', 'BLACK_HOLE', 'SPOOFING'};
     node.attack_strategy = strategies{randi(length(strategies))};
-    node.attack_frequency = 5 + 5 * rand(); % REDUCED: 5-10 seconds between attacks
+    node.attack_frequency = 15 + 10 * rand(); % INCREASED: 15-25 seconds between attacks
     node.last_attack_time = 0;
     node.target_nodes = [];
     node.message_cache = containers.Map();
     node.cache_duration = 20;
-    node.buffer_ttl = 10; % More aggressive: Messages expire from buffer after 10 seconds
+    node.buffer_ttl = 300; % More aggressive: Messages expire from buffer after 300 seconds
     node.attack_params = struct(); % Will be populated by advanced attacker function
     
     % Initialize tracking fields for dynamic features
@@ -120,13 +120,21 @@ function node = createAdvancedAttackerNode(id, x, y)
             % No extra params needed for spoofing
     end
     
-    % Dynamic attack frequency based on strategy
-    base_frequency = 8; % REDUCED from 30 to 8 seconds
+    % Dynamic attack frequency based on strategy - DIFFERENT TIMING FOR EACH ATTACK TYPE
+    base_frequency = 20; % INCREASED base frequency to 20 seconds
     switch node.attack_strategy
         case 'ADAPTIVE_FLOODING'
-            node.attack_frequency = base_frequency * 0.3; % More frequent (2-3 seconds)
+            node.attack_frequency = 3 + 2 * rand(); % Fast: 3-5 seconds (true flooding)
+        case 'FLOODING'
+            node.attack_frequency = 6 + 4 * rand(); % Medium-fast: 6-10 seconds
+        case 'BLACK_HOLE'
+            node.attack_frequency = base_frequency + 10 * rand(); % Slow: 20-30 seconds (stealth)
+        case 'SPOOFING'
+            node.attack_frequency = base_frequency + 5 * rand(); % Medium: 20-25 seconds 
+        case 'RESOURCE_EXHAUSTION'
+            node.attack_frequency = base_frequency + 15 * rand(); % Very slow: 20-35 seconds (gradual)
         otherwise
-            node.attack_frequency = base_frequency + randi(10); % 8-18 seconds
+            node.attack_frequency = base_frequency + randi(10); % Default: 20-30 seconds
     end
 end
 
@@ -222,11 +230,6 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
         fprintf('Node %d already has message %s, ignoring duplicate\n', node.id, message.id);
         return;
     end
-    cache_entry = struct();
-    cache_entry.message = message;
-    cache_entry.cache_time = current_time;
-    cache_entry.forwarded_to = [];
-    node.message_cache(message.id) = cache_entry;
 
     % Black hole attack: drop all received messages, do not buffer or forward
     if node.is_attacker && isfield(node, 'attack_strategy') && strcmp(node.attack_strategy, 'BLACK_HOLE')
@@ -273,16 +276,38 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
     % Update received count for forwarding behavior tracking
     node.received_count = node.received_count + 1;
 
-    % If not attacker, run IDS detection
+    % CRITICAL: Run IDS detection BEFORE caching for forwarding
     if ~node.is_attacker
         [node, detection_result] = runIDSDetection(node, message, sender_node, current_time);
         logMessageDetails(message, detection_result, node, current_time);
+        
+        % BLOCKING DECISION: Only cache for forwarding if IDS approves
+        if detection_result.is_attack && detection_result.confidence > 0.7
+            message.blocked = true;
+            message.block_reason = detection_result.attack_type;
+            fprintf('Node %d BLOCKED message %s (reason: %s, confidence: %.2f) - NOT FORWARDING\n', ...
+                node.id, message.id, detection_result.attack_type, detection_result.confidence);
+            
+            % Consume battery but DO NOT cache for forwarding
+            node.battery_level = node.battery_level - 0.0005;
+            return; % Exit without caching - message will NOT be forwarded
+        end
     else
         % Even attackers should log received messages for completeness
         logMessageDetails(message, [], node, current_time);
         % Also log features for messages received by attackers
         logFeatureData(message, current_time, node, sender_node);
     end
+
+    % ONLY CACHE FOR FORWARDING IF IDS APPROVED (or no IDS on attacker)
+    cache_entry = struct();
+    cache_entry.message = message;
+    cache_entry.cache_time = current_time;
+    cache_entry.forwarded_to = []; % Track which neighbors already received it
+    
+    node.message_cache(message.id) = cache_entry;
+    
+    fprintf('Node %d cached message %s for forwarding (IDS approved)\n', node.id, message.id);
 
     % Consume battery
     node.battery_level = node.battery_level - 0.0005;
@@ -291,31 +316,29 @@ end
 function rules = createDetectionRules()
     rules = struct();
     
-    % Rule 1: Flooding Detection (normalized thresholds for 0-1 feature range)
-    rules.flooding = struct();
-    rules.flooding.message_freq_threshold = 0.3; % 30% of max frequency
-    rules.flooding.message_size_threshold = 0.2; % 20% of max size  
-    rules.flooding.burst_window = 60; % seconds
-    rules.flooding.confidence = 0.7;
-    
-    % Rule 2: Spoofing Detection
+% Rule 1: Flooding Detection (balanced thresholds to reduce false positives)
+rules.flooding = struct();
+rules.flooding.message_freq_threshold = 0.95; % STRICTER: 95% of max frequency
+rules.flooding.message_size_threshold = 0.8; % STRICTER: 80% of max size
+rules.flooding.burst_window = 60; % seconds
+rules.flooding.confidence = 0.7;    % Rule 2: Spoofing Detection
     rules.spoofing = struct();
-    rules.spoofing.suspicious_url_count = 1;
-    rules.spoofing.emergency_keyword_abuse = 3;
-    rules.spoofing.sender_reputation_threshold = 0.3;
+    rules.spoofing.suspicious_url_count = 4; % STRICTER: require even more evidence
+    rules.spoofing.emergency_keyword_abuse = 10; % STRICTER: much higher threshold
+    rules.spoofing.sender_reputation_threshold = 0.1; % STRICTER: even lower reputation threshold
     rules.spoofing.confidence = 0.85;
     
-    % Rule 3: Resource Exhaustion Detection (normalized thresholds)
+    % Rule 3: Resource Exhaustion Detection (SIGNIFICANTLY relaxed to reduce false positives)
     rules.resource_exhaustion = struct();
-    rules.resource_exhaustion.message_size_threshold = 0.3; % 30% of max size
-    rules.resource_exhaustion.frequency_threshold = 0.2; % 20% of max frequency
-    rules.resource_exhaustion.battery_impact_threshold = 0.5; % 50% battery impact
+    rules.resource_exhaustion.message_size_threshold = 0.9; % STRICTER: 90% of max size
+    rules.resource_exhaustion.frequency_threshold = 0.85; % STRICTER: 85% of max frequency
+    rules.resource_exhaustion.battery_impact_threshold = 0.95; % STRICTER: 95% battery impact
     rules.resource_exhaustion.confidence = 0.6;
     
-    % Rule 4: Black Hole Detection (NEW)
+    % Rule 4: Black Hole Detection (relaxed to reduce false positives)
     rules.black_hole = struct();
-    rules.black_hole.forwarding_threshold = 0.2; % Low forwarding behavior
-    rules.black_hole.routing_anomaly_threshold = 0.4; % High routing anomalies
+    rules.black_hole.forwarding_threshold = 0.05; % STRICTER: extremely low forwarding behavior
+    rules.black_hole.routing_anomaly_threshold = 0.8; % STRICTER: much higher routing anomaly threshold
     rules.black_hole.confidence = 0.75;
 end
 %Rule-based Detection
@@ -327,55 +350,97 @@ function [rule_result] = runRuleBasedDetection(node, message, sender_node, curre
     rule_result.overall_confidence = 0;
     rule_result.triggered_rules = {};
     
-    % Rule 1: Flooding Detection
-    if features(15) > rules.flooding.message_freq_threshold || ...
-       features(8) > rules.flooding.message_size_threshold
+     % Rule 1: Flooding Detection
+     if features(15) > rules.flooding.message_freq_threshold && ...
+         features(8) > rules.flooding.message_size_threshold
         rule_result.detected_attacks{end+1} = 'FLOODING';
         rule_result.confidences(end+1) = rules.flooding.confidence;
-        rule_result.triggered_rules{end+1} = 'flooding_detection';
-        fprintf('RULE TRIGGER: Flooding detected (freq=%.1f, size=%.0f)\n', ...
-            features(15), features(8));
+        
+        % Detailed reason for flooding detection
+        flood_reasons = {};
+        if features(15) > rules.flooding.message_freq_threshold
+            flood_reasons{end+1} = sprintf('High msg frequency (%.2f > %.2f)', features(15), rules.flooding.message_freq_threshold);
+        end
+        if features(8) > rules.flooding.message_size_threshold
+            flood_reasons{end+1} = sprintf('Large msg size (%.2f > %.2f)', features(8), rules.flooding.message_size_threshold);
+        end
+        
+        rule_result.triggered_rules{end+1} = sprintf('flooding_detection: %s', strjoin(flood_reasons, ' + '));
+        fprintf('RULE TRIGGER: Flooding detected - %s\n', strjoin(flood_reasons, ' and '));
     end
     
     % Rule 2: Spoofing Detection
     spoofing_score = 0;
+    spoof_reasons = {};
+    
     if features(13) >= rules.spoofing.suspicious_url_count
         spoofing_score = spoofing_score + 0.4;
+        spoof_reasons{end+1} = sprintf('Suspicious URLs (%.0f >= %d)', features(13), rules.spoofing.suspicious_url_count);
     end
     if features(12) >= rules.spoofing.emergency_keyword_abuse
         spoofing_score = spoofing_score + 0.3;
+        spoof_reasons{end+1} = sprintf('Emergency keyword abuse (%.2f >= %d)', features(12), rules.spoofing.emergency_keyword_abuse);
     end
     if features(21) <= rules.spoofing.sender_reputation_threshold
         spoofing_score = spoofing_score + 0.3;
+        spoof_reasons{end+1} = sprintf('Low sender reputation (%.2f <= %.2f)', features(21), rules.spoofing.sender_reputation_threshold);
     end
     
-    if spoofing_score >= 0.6
+    if spoofing_score >= 0.8
         rule_result.detected_attacks{end+1} = 'SPOOFING';
         rule_result.confidences(end+1) = rules.spoofing.confidence * spoofing_score;
-        rule_result.triggered_rules{end+1} = 'spoofing_detection';
-        fprintf('RULE TRIGGER: Spoofing detected (score=%.2f)\n', spoofing_score);
+        rule_result.triggered_rules{end+1} = sprintf('spoofing_detection: %s', strjoin(spoof_reasons, ' + '));
+        fprintf('RULE TRIGGER: Spoofing detected - %s (total score=%.2f)\n', strjoin(spoof_reasons, ' and '), spoofing_score);
     end
     
     % Rule 3: Resource Exhaustion Detection (normalized thresholds)
-    if features(8) > rules.resource_exhaustion.message_size_threshold || ...
-       features(15) > rules.resource_exhaustion.frequency_threshold || ...
-       features(33) > rules.resource_exhaustion.battery_impact_threshold
+    resource_reasons = {};
+    resource_triggered = false;
+    
+    if features(8) > rules.resource_exhaustion.message_size_threshold
+        resource_reasons{end+1} = sprintf('Large msg size (%.2f > %.2f)', features(8), rules.resource_exhaustion.message_size_threshold);
+        resource_triggered = true;
+    end
+    if features(15) > rules.resource_exhaustion.frequency_threshold
+        resource_reasons{end+1} = sprintf('High frequency (%.2f > %.2f)', features(15), rules.resource_exhaustion.frequency_threshold);
+        resource_triggered = true;
+    end
+    if features(33) > rules.resource_exhaustion.battery_impact_threshold
+        resource_reasons{end+1} = sprintf('High battery impact (%.2f > %.2f)', features(33), rules.resource_exhaustion.battery_impact_threshold);
+        resource_triggered = true;
+    end
+    
+     if resource_triggered && ...
+         features(8) > rules.resource_exhaustion.message_size_threshold && ...
+         features(15) > rules.resource_exhaustion.frequency_threshold && ...
+         features(33) > rules.resource_exhaustion.battery_impact_threshold
         rule_result.detected_attacks{end+1} = 'RESOURCE_EXHAUSTION';
         rule_result.confidences(end+1) = rules.resource_exhaustion.confidence;
-        rule_result.triggered_rules{end+1} = 'resource_exhaustion_detection';
-        fprintf('RULE TRIGGER: Resource exhaustion detected (size=%.2f, freq=%.2f, battery=%.2f)\n', ...
-            features(8), features(15), features(33));
+        rule_result.triggered_rules{end+1} = sprintf('resource_exhaustion_detection: %s', strjoin(resource_reasons, ' + '));
+        fprintf('RULE TRIGGER: Resource exhaustion detected - %s\n', strjoin(resource_reasons, ' and '));
     end
     
     % Rule 4: Black Hole Detection (NEW)
     if isfield(rules, 'black_hole')
-        if features(40) < rules.black_hole.forwarding_threshold || ...  % Low forwarding behavior
-           features(29) > rules.black_hole.routing_anomaly_threshold    % High routing anomalies
+        blackhole_reasons = {};
+        blackhole_triggered = false;
+        
+        if features(40) < rules.black_hole.forwarding_threshold
+            blackhole_reasons{end+1} = sprintf('Low forwarding (%.2f < %.2f)', features(40), rules.black_hole.forwarding_threshold);
+            blackhole_triggered = true;
+        end
+        if features(29) > rules.black_hole.routing_anomaly_threshold
+            blackhole_reasons{end+1} = sprintf('High routing anomaly (%.2f > %.2f)', features(29), rules.black_hole.routing_anomaly_threshold);
+            blackhole_triggered = true;
+        end
+        
+          if blackhole_triggered && ...
+              features(40) < rules.black_hole.forwarding_threshold && ...
+              features(29) > rules.black_hole.routing_anomaly_threshold
             rule_result.detected_attacks{end+1} = 'BLACK_HOLE';
             rule_result.confidences(end+1) = rules.black_hole.confidence;
-            rule_result.triggered_rules{end+1} = 'black_hole_detection';
-            fprintf('RULE TRIGGER: Black hole detected (forwarding=%.2f, routing_anomaly=%.2f)\n', ...
-                features(40), features(29));
+            rule_result.triggered_rules{end+1} = sprintf('black_hole_detection: %s', strjoin(blackhole_reasons, ' + '));
+            fprintf('RULE TRIGGER: Black hole detected - %s\n', strjoin(blackhole_reasons, ' and '));
         end
     end
     
@@ -395,7 +460,7 @@ function [final_result] = fuseDetectionResults(rule_result, ai_result, fusion_we
     
     % Determine if attack detected by either system
     rule_attack = ~strcmp(rule_result.primary_attack, 'NORMAL') && rule_result.overall_confidence > 0.5;
-    ai_attack = ai_result.is_attack && ai_result.confidence > 0.5;
+    ai_attack = ai_result.is_attack && ai_result.confidence > 0.6;  % Adjusted for corrected confidence
     
     % Fusion logic
     if rule_attack && ai_attack
@@ -422,7 +487,7 @@ function [final_result] = fuseDetectionResults(rule_result, ai_result, fusion_we
         
     elseif ~rule_attack && ai_attack
         % Only AI detected
-        if ai_result.confidence > 0.5  % Reduced from 0.8
+        if ai_result.confidence > 0.6  % Adjusted for corrected confidence
             final_result.is_attack = true;
             final_result.attack_type = ai_result.attack_type;
             final_result.confidence = ai_result.confidence * 0.85;
@@ -563,14 +628,6 @@ function [node, detection_result] = runIDSDetection(node, message, sender_node, 
     else
         simulation_data.detections(end+1) = detection_result;
     end
-
-    if detection_result.is_attack && detection_result.confidence > 0.7
-        message.blocked = true;
-        message.block_reason = detection_result.attack_type;
-        fprintf('Node %d BLOCKED message %s (reason: %s, confidence: %.2f)\n', ...
-            node.id, message.id, detection_result.attack_type, detection_result.confidence);
-        return;
-    end
 end
 
 function features = extractMessageFeatures(node, message, sender_node, current_time)
@@ -654,7 +711,7 @@ function features = extractMessageFeatures(node, message, sender_node, current_t
     
     features(14) = countCommandPatterns(message.content); % command_pattern_count
     
-    % Traffic pattern analysis - Enhanced for attack signatures
+    % Traffic pattern analysis - Enhanced for attack signatures with LOWER frequency for non-flooding
     base_msg_freq = calculateMessageFrequency(node, current_time);
     if strcmp(attack_type, 'FLOODING') || strcmp(attack_type, 'ADAPTIVE_FLOODING')
         features(15) = min(1, base_msg_freq * (3 + rand())); % 3-4x higher frequency - MORE AGGRESSIVE
@@ -664,13 +721,14 @@ function features = extractMessageFeatures(node, message, sender_node, current_t
         features(19) = 0.1 + 0.2 * rand(); % Low timing_regularity - MORE OBVIOUS
         features(20) = 0.7 + 0.3 * rand(); % High volume_anomaly_score - INCREASED
     elseif strcmp(attack_type, 'RESOURCE_EXHAUSTION')
-        features(15) = min(1, base_msg_freq * (2.5 + rand())); % 2.5-3.5x higher frequency
-        features(16) = 0.5 + 0.4 * rand(); % Medium-high burst_intensity
-        features(17) = 0.4 + 0.4 * rand(); % Medium inter_arrival_variance
+        features(15) = min(0.4, base_msg_freq * (1.2 + 0.3 * rand())); % REDUCED: only 1.2-1.5x frequency
+        features(16) = 0.3 + 0.3 * rand(); % Medium burst_intensity - REDUCED
+        features(17) = 0.3 + 0.3 * rand(); % Medium inter_arrival_variance - REDUCED
         features(18) = 0.1 + 0.3 * rand(); % Low size_consistency - more obvious
         features(19) = 0.5 + 0.3 * rand(); % Medium timing_regularity
-        features(20) = 0.5 + 0.4 * rand(); % Higher volume_anomaly_score
+        features(20) = 0.3 + 0.3 * rand(); % Lower volume_anomaly_score - REDUCED
     else
+        % For other attacks (BLACK_HOLE, SPOOFING), keep frequency low
         features(15) = base_msg_freq + 0.05 * randn(); % Normal with noise
         features(16) = 0.3 + 0.15 * randn(); % burst_intensity with noise
         features(17) = 0.2 + 0.1 * randn(); % inter_arrival_variance with noise
@@ -1366,12 +1424,50 @@ function [is_attack, attack_type, confidence] = predictAttack(ids_model, feature
         try
             % Use the appropriate model type
             switch ids_model.model_type
-                case {'MATLAB', 'MATLAB_OPTIMIZED', 'MATLAB_FROM_PRETRAINED'}
+                case {'MATLAB', 'MATLAB_OPTIMIZED', 'MATLAB_FROM_PRETRAINED', 'READY_MATLAB_MODEL'}
                     % Use MATLAB TreeBagger (original, optimized, or from pre-trained params)
                     [prediction, scores] = predict(ids_model.rf_model, features);
                     attack_type = prediction{1}; % TreeBagger returns cell array
-                    confidence = max(scores);
+                    
+                    % Fix confidence calculation for TreeBagger
+                    % TreeBagger scores are proportion of trees voting for each class
+                    max_score = max(scores);
+                    
+                    % Convert to proper confidence (0-1 scale)
+                    % Higher max_score = higher confidence
+                    confidence = max_score;
+                    
+                    % For better fusion: normalize confidence to more usable range
+                    if max_score > 0.4  % Strong majority vote
+                        confidence = 0.8 + (max_score - 0.4) * 0.5; % Scale to 0.8-1.0
+                    elseif max_score > 0.3  % Moderate majority
+                        confidence = 0.6 + (max_score - 0.3) * 2.0; % Scale to 0.6-0.8
+                    else  % Weak majority
+                        confidence = max_score * 2.0; % Scale to 0.0-0.6
+                    end
+                    
+                    % Ensure confidence stays in [0,1] range
+                    confidence = min(1.0, max(0.0, confidence));
+                    
                     is_attack = ~strcmp(attack_type, 'NORMAL');
+                    
+                    % Generate TreeBagger reasoning based on class scores
+                    try
+                        [sorted_scores, sorted_indices] = sort(scores, 'descend');
+                        class_names = ids_model.rf_model.ClassNames;
+                        
+                        % Store TreeBagger reasoning
+                        top_classes = {};
+                        for i = 1:min(3, length(sorted_scores))
+                            if sorted_scores(i) > 0.1  % Only include significant scores
+                                class_name = class_names{sorted_indices(i)};
+                                top_classes{end+1} = sprintf('%s(%.2f)', class_name, sorted_scores(i));
+                            end
+                        end
+                        ids_model.last_ai_reasoning = sprintf('TreeBagger votes: %s', strjoin(top_classes, ', '));
+                    catch
+                        ids_model.last_ai_reasoning = sprintf('TreeBagger prediction: %s', attack_type);
+                    end
                     
                     % Optional: Show prediction for models based on pre-trained
                     if strcmp(ids_model.model_type, 'MATLAB_FROM_PRETRAINED')
@@ -1592,8 +1688,99 @@ function node = processDetectionResult(node, detection_result, original_message)
     
     % Log significant detections
     if detection_result.is_attack && detection_result.confidence > 0.6
-        fprintf('Node %d detected attack: %s (confidence: %.2f) from message %s\n', ...
-            node.id, detection_result.attack_type, detection_result.confidence, detection_result.message_id);
+        % Determine the real attack type
+        if isfield(original_message, 'true_attack_type')
+            real_attack_type = original_message.true_attack_type;
+        elseif original_message.is_attack
+            % If message doesn't have true_attack_type but is an attack, try to get from source
+            real_attack_type = 'UNKNOWN_ATTACK';
+        else
+            real_attack_type = 'NORMAL';
+        end
+        
+        % Enhanced detection output showing: Detected vs Real attack types + confidence + detection source + reason
+        % Consider ADAPTIVE_FLOODING and FLOODING as equivalent for accuracy
+        is_correct_detection = strcmp(detection_result.attack_type, real_attack_type) || ...
+                              (strcmp(detection_result.attack_type, 'FLOODING') && strcmp(real_attack_type, 'ADAPTIVE_FLOODING')) || ...
+                              (strcmp(detection_result.attack_type, 'ADAPTIVE_FLOODING') && strcmp(real_attack_type, 'FLOODING'));
+        
+        % Determine detection source and reason
+        detection_source = 'UNKNOWN';
+        detection_reason = 'No specific reason available';
+        
+        if isfield(detection_result, 'fusion_method')
+            switch detection_result.fusion_method
+                case 'CONSENSUS'
+                    detection_source = 'HYBRID (Rule+AI Consensus)';
+                    rule_details = '';
+                    ai_details = '';
+                    
+                    % Get rule reasoning
+                    if isfield(detection_result, 'triggered_rules') && ~isempty(detection_result.triggered_rules)
+                        rule_details = sprintf('Rules: %s', strjoin(detection_result.triggered_rules, '; '));
+                    end
+                    
+                    % Get AI reasoning
+                    if isfield(node.ids_model, 'last_ai_reasoning') && ~isempty(node.ids_model.last_ai_reasoning)
+                        ai_details = sprintf('AI: %s', node.ids_model.last_ai_reasoning);
+                    end
+                    
+                    if ~isempty(rule_details) && ~isempty(ai_details)
+                        detection_reason = sprintf('%s | %s (rule_conf:%.2f, ai_conf:%.2f)', ...
+                            rule_details, ai_details, detection_result.rule_confidence, detection_result.ai_confidence);
+                    elseif ~isempty(rule_details)
+                        detection_reason = sprintf('%s (rule_conf:%.2f, ai_conf:%.2f)', ...
+                            rule_details, detection_result.rule_confidence, detection_result.ai_confidence);
+                    else
+                        detection_reason = sprintf('Both rule-based (conf:%.2f) and AI (conf:%.2f) agreed on attack', ...
+                            detection_result.rule_confidence, detection_result.ai_confidence);
+                    end
+                case 'RULE_ONLY'
+                    detection_source = 'RULE-BASED ONLY';
+                    if isfield(detection_result, 'triggered_rules') && ~isempty(detection_result.triggered_rules)
+                        rule_list = strjoin(detection_result.triggered_rules, ', ');
+                        detection_reason = sprintf('Rule(s) triggered: %s (conf:%.2f)', rule_list, detection_result.rule_confidence);
+                    else
+                        detection_reason = sprintf('Rule-based detection (conf:%.2f)', detection_result.rule_confidence);
+                    end
+                case 'AI_ONLY'
+                    detection_source = 'AI-BASED ONLY';
+                    if isfield(node.ids_model, 'last_ai_reasoning') && ~isempty(node.ids_model.last_ai_reasoning)
+                        detection_reason = sprintf('AI model: %s (conf:%.2f)', node.ids_model.last_ai_reasoning, detection_result.ai_confidence);
+                    else
+                        detection_reason = sprintf('AI model prediction (conf:%.2f)', detection_result.ai_confidence);
+                    end
+                case 'RULE_WEAK'
+                    detection_source = 'RULE-BASED (Weak)';
+                    detection_reason = sprintf('Weak rule confidence (%.2f), classified as normal', detection_result.rule_confidence);
+                case 'AI_WEAK'
+                    detection_source = 'AI-BASED (Weak)';
+                    detection_reason = sprintf('Weak AI confidence (%.2f), classified as normal', detection_result.ai_confidence);
+                case 'BOTH_NORMAL'
+                    detection_source = 'HYBRID (Both Normal)';
+                    detection_reason = 'Both rule-based and AI classified as normal';
+                otherwise
+                    detection_source = sprintf('HYBRID (%s)', detection_result.fusion_method);
+                    detection_reason = sprintf('Fusion method: %s', detection_result.fusion_method);
+            end
+        else
+            % Legacy single-model detection
+            detection_source = 'AI-LEGACY';
+            detection_reason = sprintf('Legacy AI detection (conf:%.2f)', detection_result.confidence);
+        end
+        
+        if is_correct_detection
+            % Correct detection (including FLOODING/ADAPTIVE_FLOODING equivalence)
+            fprintf('✅ Node %d: CORRECT detection | Detected: %s | Real: %s | Confidence: %.2f | Source: %s\n', ...
+                node.id, detection_result.attack_type, real_attack_type, detection_result.confidence, detection_source);
+            fprintf('   └─ Reason: %s | Message: %s\n', detection_reason, detection_result.message_id);
+        else
+            % Incorrect detection (misclassification)
+            fprintf('❌ Node %d: MISCLASSIFIED | Detected: %s | Real: %s | Confidence: %.2f | Source: %s\n', ...
+                node.id, detection_result.attack_type, real_attack_type, detection_result.confidence, detection_source);
+            fprintf('   └─ Reason: %s | Message: %s\n', detection_reason, detection_result.message_id);
+        end
+        
         % Log the detected attack
         logMessageDetails(original_message, detection_result, node, detection_result.timestamp);
     end
@@ -3138,7 +3325,6 @@ function ids_model = createOptimizedMATLABModel(ids_model)
     catch ME
         fprintf('❌ Optimized model creation failed: %s\n', ME.message);
         fprintf(' Falling back to standard training...\n');
-        ids_model = trainRandomForestModel(ids_model);
     end
 end
 
@@ -3147,135 +3333,73 @@ function ids_model = loadPretrainedModel(ids_model)
     try
         fprintf(' Loading parameters from your pre-trained model...\n');
         
-        % First, look for exported MATLAB parameters (JSON format)
-        param_files = dir('models/matlab_params_*.json');
-        if ~isempty(param_files)
-            % Sort by date and take the newest
-            [~, newest_idx] = max([param_files.datenum]);
-            param_path = fullfile(param_files(newest_idx).folder, param_files(newest_idx).name);
-            fprintf('✅ Found exported parameters: %s\n', param_files(newest_idx).name);
-            fprintf(' Export date: %s\n', datestr(param_files(newest_idx).datenum));
-            
-            % Load the exported parameters
-            optimized_params = loadPythonExportedParams(param_path);
-            
-            if ~isempty(optimized_params)
-                fprintf(' Using your Python-trained model parameters...\n');
-                fprintf(' Model timestamp: %s\n', optimized_params.timestamp);
-                ids_model.optimization_source = 'PYTHON_EXPORTED_PARAMS';
-            else
-                error('Failed to load exported parameters');
-            end
-        else
-            % Fallback: Look for your trained model files
-            fprintf('⚠️  No exported parameters found, looking for model files...\n');
-            model_files = dir('models/bluetooth_mesh_ids_rf_*.joblib');
-            if isempty(model_files)
-                model_files = dir('models/*rf*.joblib');
-            end
-            if isempty(model_files)
-                model_files = dir('models/*rf*.pkl');
-            end
-            
-            if ~isempty(model_files)
-                % Sort by date and take the newest
-                [~, newest_idx] = max([model_files.datenum]);
-                model_path = fullfile(model_files(newest_idx).folder, model_files(newest_idx).name);
-                fprintf('✅ Found your trained model: %s\n', model_path);
-                fprintf(' Model date: %s\n', datestr(model_files(newest_idx).datenum));
+        % Load our comprehensive Random Forest model using the loader function
+        try
+            % Use the loadRandomForestModel function we created
+            if exist('loadRandomForestModel.m', 'file')
+                comprehensive_model = loadRandomForestModel();
                 
-                % Extract parameters from filename
-                optimized_params = extractPythonModelParams(model_files(newest_idx).name);
-                if ~isempty(optimized_params)
-                    fprintf(' Using parameters from: %s\n', strrep(model_files(newest_idx).name, '.joblib', ''));
-                    ids_model.optimization_source = 'PYTHON_MODEL_PARAMS';
-                else
-                    error('Failed to extract model parameters');
-                end
+                % Integrate the loaded model into our IDS structure
+                ids_model.rf_model = comprehensive_model.rf_model;
+                ids_model.model_type = 'MATLAB';
+                ids_model.model_loaded = true;
+                ids_model.optimization_source = 'COMPREHENSIVE_RF_MODEL';
+                ids_model.validation_accuracy = comprehensive_model.accuracy;
+                ids_model.feature_names = comprehensive_model.feature_names;
+                
+                fprintf('✅ Successfully loaded comprehensive Random Forest model!\n');
+                fprintf(' Model details:\n');
+                fprintf('   - Validation Accuracy: %.2f%%\n', comprehensive_model.accuracy * 100);
+                fprintf('   - Features: %d\n', length(comprehensive_model.feature_names));
+                fprintf('   - Classes: %s\n', strjoin(comprehensive_model.class_names, ', '));
+                return;
             else
-                error('No trained model files found');
+                fprintf('⚠️ loadRandomForestModel.m not found, trying direct model loading...\n');
             end
+        catch load_error
+            fprintf('⚠️ Failed to load using loadRandomForestModel: %s\n', load_error.message);
         end
         
-        % Create MATLAB model using your pre-trained model's optimal parameters
-        if ~isempty(optimized_params)
-            fprintf(' Creating MATLAB model with your pre-trained parameters...\n');
-            ids_model = createModelFromPythonParams(ids_model, optimized_params);
+        % Fallback: Direct loading of the latest Random Forest model
+        model_files = dir('models/bluetooth_mesh_ids_rf_*.mat');
+        if ~isempty(model_files)
+            % Sort by date and take the newest
+            [~, newest_idx] = max([model_files.datenum]);
+            model_path = fullfile(model_files(newest_idx).folder, model_files(newest_idx).name);
+            fprintf(' Found Random Forest model: %s\n', model_files(newest_idx).name);
+            
+            try
+                % Load the model directly
+                fprintf(' Loading Random Forest model...\n');
+                model_data = load(model_path);
+                if isfield(model_data, 'rf_model')
+                    ids_model.rf_model = model_data.rf_model;
+                    ids_model.model_type = 'MATLAB';
+                    ids_model.model_loaded = true;
+                    ids_model.optimization_source = 'DIRECT_RF_LOAD';
+                    fprintf('✅ Successfully loaded Random Forest model directly!\n');
+                    return;
+                else
+                    fprintf('⚠️ Model file does not contain rf_model field\n');
+                end
+            catch load_error
+                fprintf('⚠️ Failed to load model directly: %s\n', load_error.message);
+            end
         else
-            fprintf('❌ Failed to load parameters\n');
-            fprintf(' Training new MATLAB TreeBagger model...\n');
-            ids_model = trainRandomForestModel(ids_model);
+            fprintf('❌ No Random Forest model found in models/ directory\n');
+            fprintf(' Please run buildRandomForestModel.m first\n');
+            error('No Random Forest model available');
         end
         
     catch ME
         fprintf('❌ Model loading failed: %s\n', ME.message);
-        fprintf(' Falling back to MATLAB TreeBagger training...\n');
-        ids_model = trainRandomForestModel(ids_model);
+        fprintf(' Please check that your Random Forest model exists and is valid\n');
+        error('Failed to load Random Forest model');
     end
 end
 
-function ids_model = createModelFromPythonParams(ids_model, optimized_params)
-    % Create MATLAB model using parameters from your Python-trained model
-    try
-        fprintf(' Creating MATLAB model with your pre-trained parameters...\n');
-        
-        fprintf(' Your model parameters:\n');
-        fprintf('   - Trees: %d (from your trained model)\n', optimized_params.n_estimators);
-        fprintf('   - Max Features: %s (from your trained model)\n', optimized_params.max_features);
-        fprintf('   - Min Leaf Size: %d (from your trained model)\n', optimized_params.min_leaf_size);
-        fprintf('   - Bag Fraction: %.1f (from your trained model)\n', optimized_params.in_bag_fraction);
-        
-        % Generate training data with the same quality as your Python training
-        fprintf(' Generating training dataset with your models learned patterns...\n');
-       
-        
-        % Calculate optimal number of features (same as your Python model)
-        n_features = 43; % Fixed from pre-trained model
-        if strcmp(optimized_params.max_features, 'sqrt')
-            n_predictors = floor(sqrt(n_features));  % Same as your Python model
-        else
-            n_predictors = optimized_params.max_features;
-        end
-        
-        fprintf(' Training MATLAB TreeBagger with your proven parameters...\n');
-        
-        % NO TREEBAGGER TRAINING - USE YOUR PRE-TRAINED MODEL DIRECTLY!
-        fprintf('✅ Using your pre-trained Python model knowledge (NO RETRAINING)\n');
-        
-        % Store your pre-trained model's knowledge
-        ids_model.rf_model = []; % No TreeBagger needed - using your trained model
-        ids_model.model_type = 'PYTHON_PRETRAINED_LOOKUP';
-        ids_model.prediction_weights = optimized_params.feature_importances;
-        
-        % Set detection thresholds learned from your Python model
-        ids_model.class_thresholds = struct();
-        ids_model.class_thresholds.BLACK_HOLE = 0.35;
-        ids_model.class_thresholds.FLOODING = 0.30;
-        ids_model.class_thresholds.SPOOFING = 0.25;
-        ids_model.class_thresholds.RESOURCE_EXHAUSTION = 0.40;
-        ids_model.class_thresholds.ADAPTIVE_FLOODING = 0.32;
-        ids_model.class_thresholds.NORMAL = 0.20;
-        
-        % Store model metadata
-        ids_model.feature_names = optimized_params.feature_names;
-        ids_model.attack_types = optimized_params.class_names;
-        ids_model.feature_importances = optimized_params.feature_importances;
-        ids_model.python_timestamp = optimized_params.timestamp;
-        ids_model.optimization_source = optimized_params.source;
-        
-        % CRITICAL: Mark model as loaded
-        ids_model.model_loaded = true;
-        
-        fprintf('✅ MATLAB model created with your Python parameters!\n');
-        fprintf(' Trees: %d, Features: %d, Classes: %d\n', ...
-            optimized_params.n_estimators, n_features, length(optimized_params.class_names));
-        
-    catch ME
-        fprintf('❌ Failed to create model from Python parameters: %s\n', ME.message);
-        fprintf(' Falling back to standard training...\n');
-        ids_model = trainRandomForestModel(ids_model);
-    end
-end
+
+
 function shared_model = createSharedIDSModel()
     shared_model = struct();
     shared_model.model_loaded = false;
@@ -3284,8 +3408,8 @@ function shared_model = createSharedIDSModel()
     shared_model.feature_weights = rand(43, 1);
     shared_model.rules = createDetectionRules();
     shared_model.hybrid_mode = true;
-    shared_model.rule_confidence_threshold = 0.5;  % Reduced from 0.8 to 0.5
-    shared_model.ai_confidence_threshold = 0.4;   % Reduced from 0.6 to 0.4
+    shared_model.rule_confidence_threshold = 0.7;  % INCREASED: Require higher confidence (was 0.5)
+    shared_model.ai_confidence_threshold = 0.6;   % INCREASED: Require higher confidence (was 0.4)
     shared_model.fusion_weights = struct('rule_weight', 0.5, 'ai_weight', 0.5);  % Balanced weights
     
     % Load pre-trained model instead of training new one
@@ -3554,6 +3678,7 @@ function runBluetoothMeshSimulation()
     fprintf('Initializing network nodes...\n');
     nodes = [];
     fprintf('Training shared IDS model...\n');
+    fprintf('🔧 Loading comprehensive Random Forest model (102 datasets, 79K+ samples)...\n');
     shared_ids_model = createSharedIDSModel();
     
     % Create normal nodes with random positions
@@ -3754,8 +3879,8 @@ function runBluetoothMeshSimulation()
                                             % Check TTL and maximum hop count limits
                                             MAX_HOP_COUNT = 10; % Maximum allowed hops in mesh network
                                             if forwarded_msg.ttl <= 0 || forwarded_msg.hop_count > MAX_HOP_COUNT
-                                                fprintf('Message %s dropped: TTL=%d, hops=%d (max_hops=%d)\n', ...
-                                                    msg_id, forwarded_msg.ttl, forwarded_msg.hop_count, MAX_HOP_COUNT);
+                                                %fprintf('Message %s dropped: TTL=%d, hops=%d (max_hops=%d)\n', ...
+                                                %    msg_id, forwarded_msg.ttl, forwarded_msg.hop_count, MAX_HOP_COUNT);
                                                 continue; % Skip forwarding this message
                                             end
             
@@ -4004,8 +4129,52 @@ function [is_attack, attack_type, confidence] = predictWithPythonModel(ids_model
         confidence = min(max_score, 1.0); % Cap at 1.0
         is_attack = ~strcmp(attack_type, 'NORMAL') && confidence > 0.5;
         
-        % Debug: Print prediction result
+        % Generate detailed AI reasoning
+        ai_reasons = {};
+        if strcmp(attack_type, 'FLOODING')
+            if normalized_features(msg_freq_idx) > 0.3
+                ai_reasons{end+1} = sprintf('High msg frequency (%.2f)', normalized_features(msg_freq_idx));
+            end
+            if normalized_features(msg_size_idx) > 0.2
+                ai_reasons{end+1} = sprintf('Large msg size (%.2f)', normalized_features(msg_size_idx));
+            end
+            if normalized_features(battery_impact_idx) > 0.4
+                ai_reasons{end+1} = sprintf('High battery impact (%.2f)', normalized_features(battery_impact_idx));
+            end
+        elseif strcmp(attack_type, 'SPOOFING')
+            if normalized_features(suspicious_url_idx) > 0
+                ai_reasons{end+1} = sprintf('Suspicious URLs detected (%.2f)', normalized_features(suspicious_url_idx));
+            end
+            if normalized_features(sender_rep_idx) < 0.5
+                ai_reasons{end+1} = sprintf('Low sender reputation (%.2f)', normalized_features(sender_rep_idx));
+            end
+        elseif strcmp(attack_type, 'BLACK_HOLE')
+            if normalized_features(forwarding_idx) < 0.3
+                ai_reasons{end+1} = sprintf('Low forwarding behavior (%.2f)', normalized_features(forwarding_idx));
+            end
+            if normalized_features(routing_anomaly_idx) > 0.3
+                ai_reasons{end+1} = sprintf('High routing anomaly (%.2f)', normalized_features(routing_anomaly_idx));
+            end
+        elseif strcmp(attack_type, 'RESOURCE_EXHAUSTION')
+            if normalized_features(msg_size_idx) > 0.3
+                ai_reasons{end+1} = sprintf('Large msg size (%.2f)', normalized_features(msg_size_idx));
+            end
+            if normalized_features(battery_impact_idx) > 0.5
+                ai_reasons{end+1} = sprintf('High battery impact (%.2f)', normalized_features(battery_impact_idx));
+            end
+            if normalized_features(msg_freq_idx) > 0.2
+                ai_reasons{end+1} = sprintf('High frequency (%.2f)', normalized_features(msg_freq_idx));
+            end
+        end
+        
+        % Store AI reasoning for later use
+        ids_model.last_ai_reasoning = strjoin(ai_reasons, ', ');
+        
+        % Debug: Print prediction result with reasoning
         fprintf('DEBUG: AI predicted %s with confidence %.3f (is_attack=%d)\n', attack_type, confidence, is_attack);
+        if ~isempty(ai_reasons)
+            fprintf('DEBUG: AI reasoning: %s\n', ids_model.last_ai_reasoning);
+        end
         fprintf('DEBUG: Scores - FLOOD:%.2f SPOOF:%.2f BLACK:%.2f RESOURCE:%.2f NORMAL:%.2f\n', ...
                 attack_scores.FLOODING, attack_scores.SPOOFING, attack_scores.BLACK_HOLE, ...
                 attack_scores.RESOURCE_EXHAUSTION, attack_scores.NORMAL);
