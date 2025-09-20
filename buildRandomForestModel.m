@@ -30,18 +30,14 @@ end
 %% Find and Load Training Data
 fprintf('1. Loading training data...\n');
 
-% Get list of available datasets (both balanced and unbalanced)
+
+% Get list of available balanced datasets only
 balanced_pattern = fullfile(TRAINING_DATA_DIR, 'balanced_feature_dataset_*.csv');
-unbalanced_pattern = fullfile(TRAINING_DATA_DIR, 'feature_dataset_*.csv');
-
 balanced_files = dir(balanced_pattern);
-unbalanced_files = dir(unbalanced_pattern);
-
-% Combine all files
-files = [balanced_files; unbalanced_files];
+files = balanced_files;
 
 if isempty(files)
-    error('No training data files found in %s', TRAINING_DATA_DIR);
+    error('No balanced training data files found in %s', TRAINING_DATA_DIR);
 end
 
 % Sort files by date
@@ -49,9 +45,9 @@ end
 files = files(idx);
 
 fprintf('   Found %d balanced dataset files\n', length(balanced_files));
-fprintf('   Found %d unbalanced dataset files\n', length(unbalanced_files));
+fprintf('   Using only balanced datasets.\n');
 fprintf('   Total: %d dataset files\n', length(files));
-fprintf('   Loading and combining all datasets...\n');
+fprintf('   Loading and combining all balanced datasets...\n');
 
 % Load and combine all data files
 combined_data = table();
@@ -289,9 +285,10 @@ params.feature_importance = feature_importance;
 params.timestamp = timestamp;
 params.num_source_files = length(files);
 params.source_files = {files.name}; % List of all source files used
-params.data_type = 'combined (balanced + unbalanced)';
+
+params.data_type = 'balanced only';
 params.num_balanced_files = length(balanced_files);
-params.num_unbalanced_files = length(unbalanced_files);
+params.num_unbalanced_files = 0;
 
 params_file = fullfile(MODELS_DIR, sprintf('matlab_params_%s.json', timestamp));
 json_str = jsonencode(params);
@@ -388,7 +385,6 @@ fprintf('  - Training Time: %.2f seconds\n', training_time);
 fprintf('  - Data Type: combined (balanced + unbalanced)\n');
 fprintf('\nSource Files Used:\n');
 fprintf('  Balanced datasets: %d files\n', length(balanced_files));
-fprintf('  Unbalanced datasets: %d files\n', length(unbalanced_files));
 for i = 1:min(5, length(files))
     fprintf('  - %s\n', files(i).name);
 end
