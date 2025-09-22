@@ -221,7 +221,7 @@ function [node, message] = sendMessage(node, content, msg_type, destination_id, 
     fprintf('Node %d sent message %s at time %.2f\n', node.id, message.id, current_time);
 end
 
-function [node, detection_result] = receiveMessage(node, message, current_time, sender_node)
+function [node, detection_result] = receiveMessage(node, message, current_time, sender_node, detection_confidence_threshold)
     detection_result = [];
     if ~node.is_active || node.battery_level < 0.1
         return;
@@ -282,7 +282,7 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
         logMessageDetails(message, detection_result, node, current_time);
         
         % BLOCKING DECISION: Only cache for forwarding if IDS approves
-        if detection_result.is_attack && detection_result.confidence > 0.7
+        if detection_result.is_attack && detection_result.confidence > detection_confidence_threshold
             message.blocked = true;
             message.block_reason = detection_result.attack_type;
             fprintf('Node %d BLOCKED message %s (reason: %s, confidence: %.2f) - NOT FORWARDING\n', ...
@@ -312,6 +312,9 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
     % Consume battery
     node.battery_level = node.battery_level - 0.0005;
 end
+% === IDS Detection Thresholds (edit here to tune) ===
+% Confidence threshold for blocking messages classified as attacks
+detection_confidence_threshold = 0.5; % First test value
 %Detection Rules for Rule-based Detection
 function rules = createDetectionRules()
     rules = struct();
@@ -3658,11 +3661,16 @@ end
 
 %% Main Simulation Function
 function runBluetoothMeshSimulation()
+
     global simulation_data;
     global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE ;
     global feature_log;
     global message_log; % Add global declaration for message_log
-    
+
+    % === IDS Detection Thresholds (edit here to tune) ===
+    % Confidence threshold for blocking messages classified as attacks
+    detection_confidence_threshold = 0.6; % Next test value
+
     % Initialize message_log as empty struct array
     message_log = struct([]);
 
@@ -3885,7 +3893,7 @@ function runBluetoothMeshSimulation()
                                             end
             
                                             if neighbor_id ~= forwarded_msg.source_id
-                                                [nodes(neighbor_idx), detection_result] = receiveMessage(nodes(neighbor_idx), forwarded_msg, current_time, nodes(i));
+                                                [nodes(neighbor_idx), detection_result] = receiveMessage(nodes(neighbor_idx), forwarded_msg, current_time, nodes(i), detection_confidence_threshold);
                                                 
                                                 % Increment forwarded count for the forwarding node
                                                 if isfield(nodes(i), 'forwarded_count')
