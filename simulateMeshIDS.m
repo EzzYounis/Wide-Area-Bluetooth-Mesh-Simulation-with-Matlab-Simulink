@@ -8,11 +8,11 @@ clear all; close all; clc;
 
 %% Simulation Parameters
 global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE ;
-NUM_NORMAL_NODES = 20;
-NUM_ATTACK_NODES = 4;
+NUM_NORMAL_NODES = 3;
+NUM_ATTACK_NODES = 1;
 TOTAL_NODES = NUM_NORMAL_NODES + NUM_ATTACK_NODES;
 MESSAGE_INTERVAL = 60; % seconds - INCREASED to 30 to reduce message load
-SIMULATION_TIME = 2* 60; % 5 minutes for better forwarding analysis
+SIMULATION_TIME = 15* 60; % 5 minutes for better forwarding analysis
 TRANSMISSION_RANGE = 50; % meterss
 AREA_SIZE = 200; % 200x200 meter area
 
@@ -60,7 +60,6 @@ function node = createAttackerNode(id, x, y)
     node.last_position = [x, y]; % Initialize with current position
     node.total_distance_moved = 0; % Track cumulative movement
 end
-
 function node = createNormalNode(id, x, y)
     node = struct();
     node.id = id;
@@ -118,7 +117,6 @@ function node = createAdvancedAttackerNode(id, x, y)
             % No extra params needed for black hole
         case 'SPOOFING'
             % No extra params needed for spoofing
-    end
     
     % Dynamic attack frequency based on strategy - DIFFERENT TIMING FOR EACH ATTACK TYPE
     base_frequency = 20; % INCREASED base frequency to 20 seconds
@@ -136,8 +134,8 @@ function node = createAdvancedAttackerNode(id, x, y)
         otherwise
             node.attack_frequency = base_frequency + randi(10); % Default: 20-30 seconds
     end
+    end
 end
-
 
 function [x, y] = getGridPosition(node_index, total_nodes, area_size, transmission_range)
     % Calculate grid dimensions
@@ -155,7 +153,7 @@ function [x, y] = getGridPosition(node_index, total_nodes, area_size, transmissi
     
     % Ensure within bounds
     x = min(max(x, 0), area_size);
-    y = min(max(y, 0), area_size);
+	y = min(max(y, 0), area_size);
 end
 
 %% Node Operation Functions
@@ -220,6 +218,7 @@ function [node, message] = sendMessage(node, content, msg_type, destination_id, 
     
     fprintf('Node %d sent message %s at time %.2f\n', node.id, message.id, current_time);
 end
+
 
 function [node, detection_result] = receiveMessage(node, message, current_time, sender_node, detection_confidence_threshold)
     detection_result = [];
@@ -312,6 +311,7 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
     % Consume battery
     node.battery_level = node.battery_level - 0.0005;
 end
+
 % === IDS Detection Thresholds (edit here to tune) ===
 % Confidence threshold for blocking messages classified as attacks
 detection_confidence_threshold = 0.5; % First test value
@@ -344,6 +344,7 @@ rules.flooding.confidence = 0.7;    % Rule 2: Spoofing Detection
     rules.black_hole.routing_anomaly_threshold = 0.8; % STRICTER: much higher routing anomaly threshold
     rules.black_hole.confidence = 0.75;
 end
+
 %Rule-based Detection
 function [rule_result] = runRuleBasedDetection(node, message, sender_node, current_time, features)
     rules = node.ids_model.rules;
@@ -395,6 +396,8 @@ function [rule_result] = runRuleBasedDetection(node, message, sender_node, curre
         rule_result.triggered_rules{end+1} = sprintf('spoofing_detection: %s', strjoin(spoof_reasons, ' + '));
         fprintf('RULE TRIGGER: Spoofing detected - %s (total score=%.2f)\n', strjoin(spoof_reasons, ' and '), spoofing_score);
     end
+
+
     
     % Rule 3: Resource Exhaustion Detection (normalized thresholds)
     resource_reasons = {};
@@ -455,8 +458,8 @@ function [rule_result] = runRuleBasedDetection(node, message, sender_node, curre
         rule_result.primary_attack = 'NORMAL';
         rule_result.overall_confidence = 0;
     end
-end
 
+end
 
 function [final_result] = fuseDetectionResults(rule_result, ai_result, fusion_weights)
     final_result = struct();
@@ -845,7 +848,8 @@ function features = extractMessageFeatures(node, message, sender_node, current_t
     end
     
     % Ensure all features are within [0,1] bounds
-    features = max(0, min(1, features));
+	features = max(0, min(1, features));
+end
 
 % Helper function to enhance features based on attack type
 function enhanced_feature = enhanceFeatureByAttackType(base_value, attack_type, feature_name)
@@ -907,7 +911,6 @@ function stability = calculateRouteStability(node)
     else
         stability = 0.8; % fallback if no history
     end
-end
 end
 
 % Export feature log as dataset (call this at the end of your main script)
@@ -1772,23 +1775,26 @@ function node = processDetectionResult(node, detection_result, original_message)
             detection_reason = sprintf('Legacy AI detection (conf:%.2f)', detection_result.confidence);
         end
         
+       
         if is_correct_detection
-            % Correct detection (including FLOODING/ADAPTIVE_FLOODING equivalence)
             fprintf('✅ Node %d: CORRECT detection | Detected: %s | Real: %s | Confidence: %.2f | Source: %s\n', ...
                 node.id, detection_result.attack_type, real_attack_type, detection_result.confidence, detection_source);
-            fprintf('   └─ Reason: %s | Message: %s\n', detection_reason, detection_result.message_id);
         else
-            % Incorrect detection (misclassification)
             fprintf('❌ Node %d: MISCLASSIFIED | Detected: %s | Real: %s | Confidence: %.2f | Source: %s\n', ...
                 node.id, detection_result.attack_type, real_attack_type, detection_result.confidence, detection_source);
-            fprintf('   └─ Reason: %s | Message: %s\n', detection_reason, detection_result.message_id);
         end
+        fprintf('   └─ Reason: %s | Message: %s\n', detection_reason, detection_result.message_id);
+        % Print all message features for the detected message (for both correct and misclassified)
+        features_for_print = extractMessageFeatures(node, original_message, [], detection_result.timestamp);
+        fprintf('   └─ Features: [');
+        fprintf('%.4f ', features_for_print);
+        fprintf(']\n');
         
         % Log the detected attack
         logMessageDetails(original_message, detection_result, node, detection_result.timestamp);
+        
     end
 end
-
 %% Attacker Functions
 function [node, attack_message] = launchAttack(node, current_time, target_nodes)
     attack_message = []; % Initialize return value
@@ -3669,7 +3675,7 @@ function runBluetoothMeshSimulation()
 
     % === IDS Detection Thresholds (edit here to tune) ===
     % Confidence threshold for blocking messages classified as attacks
-    detection_confidence_threshold = 0.6; % Next test value
+    detection_confidence_threshold = 1.0; % Next test value
 
     % Initialize message_log as empty struct array
     message_log = struct([]);
@@ -4040,7 +4046,9 @@ function updateForwardingBehaviorInLog(node, current_time)
             feature_log(i).features(40) = current_fwd_behavior;
         end
     end
+
 end
+
 
 function [is_attack, attack_type, confidence] = predictWithPythonModel(ids_model, features)
     % Use your pre-trained Python model's feature importance weights for prediction
