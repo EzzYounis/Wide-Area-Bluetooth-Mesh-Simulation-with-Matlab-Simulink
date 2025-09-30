@@ -32,7 +32,8 @@ fprintf('1. Loading training data...\n');
 
 
 % Get list of available balanced datasets only
-balanced_pattern = fullfile(TRAINING_DATA_DIR, 'balanced_feature_dataset_*.csv');
+%%balanced_pattern = fullfile(TRAINING_DATA_DIR, 'balanced_feature_dataset_*_cleaned.csv');
+balanced_pattern = fullfile(TRAINING_DATA_DIR, 'merged_shuffled_feature_dataset.csv');
 balanced_files = dir(balanced_pattern);
 files = balanced_files;
 
