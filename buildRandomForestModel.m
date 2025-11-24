@@ -31,24 +31,34 @@ end
 fprintf('1. Loading training data...\n');
 
 
-% Get list of available balanced datasets only
-%%balanced_pattern = fullfile(TRAINING_DATA_DIR, 'balanced_feature_dataset_*_cleaned.csv');
-balanced_pattern = fullfile(TRAINING_DATA_DIR, 'merged_shuffled_feature_dataset.csv');
+% Get list of available datasets
+balanced_pattern = fullfile(TRAINING_DATA_DIR, 'balanced_feature_dataset_*_cleaned.csv');
 balanced_files = dir(balanced_pattern);
-files = balanced_files;
+
+if USE_ALL_DATA
+    % Also load non-balanced datasets
+    unbalanced_pattern = fullfile(TRAINING_DATA_DIR, 'feature_dataset_*.csv');
+    all_feature_files = dir(unbalanced_pattern);
+    % Filter out balanced ones (avoid duplicates)
+    unbalanced_files = all_feature_files(~contains({all_feature_files.name}, 'balanced'));
+    files = [balanced_files; unbalanced_files];
+    fprintf('   Found %d balanced + %d unbalanced dataset files\n', length(balanced_files), length(unbalanced_files));
+else
+    files = balanced_files;
+    fprintf('   Found %d balanced dataset files\n', length(balanced_files));
+    fprintf('   Using only balanced datasets.\n');
+end
 
 if isempty(files)
-    error('No balanced training data files found in %s', TRAINING_DATA_DIR);
+    error('No training data files found in %s', TRAINING_DATA_DIR);
 end
 
 % Sort files by date
 [~, idx] = sort([files.datenum], 'descend');
 files = files(idx);
 
-fprintf('   Found %d balanced dataset files\n', length(balanced_files));
-fprintf('   Using only balanced datasets.\n');
 fprintf('   Total: %d dataset files\n', length(files));
-fprintf('   Loading and combining all balanced datasets...\n');
+fprintf('   Loading and combining all datasets...\n');
 
 % Load and combine all data files
 combined_data = table();
@@ -135,6 +145,46 @@ if inf_count > 0
 end
 
 fprintf('   ✅ Final dataset: %d samples, %d features\n', size(X, 1), size(X, 2));
+
+% Validate feature ranges - all features should be in [0,1] except for specific exceptions
+fprintf('\n2.5. Validating feature ranges...\n');
+feature_mins = min(X);
+feature_maxs = max(X);
+out_of_bounds_min = find(feature_mins < -0.1);
+out_of_bounds_max = find(feature_maxs > 1.1);
+
+if ~isempty(out_of_bounds_min) || ~isempty(out_of_bounds_max)
+    fprintf('   ⚠️  WARNING: Features outside [0,1] range:\n');
+    if ~isempty(out_of_bounds_min)
+        for idx = out_of_bounds_min
+            fprintf('      %s: min=%.4f (below 0)\n', feature_cols{idx}, feature_mins(idx));
+        end
+    end
+    if ~isempty(out_of_bounds_max)
+        for idx = out_of_bounds_max
+            fprintf('      %s: max=%.4f (above 1)\n', feature_cols{idx}, feature_maxs(idx));
+        end
+    end
+    fprintf('   ⚠️  Consider normalizing these features before training\n');
+else
+    fprintf('   ✅ All features within [0,1] range\n');
+end
+
+% Check class balance
+fprintf('\n2.6. Checking class balance...\n');
+class_counts_table = array2table(zeros(length(unique_classes), 2), 'VariableNames', {'Class', 'Count'});
+for i = 1:length(unique_classes)
+    class_counts_table.Class(i) = i;
+    class_counts_table.Count(i) = sum(strcmp(y, unique_classes{i}));
+end
+imbalance_ratio = max(class_counts_table.Count) / min(class_counts_table.Count);
+fprintf('   Class imbalance ratio: %.1f:1\n', imbalance_ratio);
+if imbalance_ratio > 3
+    fprintf('   ⚠️  WARNING: High class imbalance detected\n');
+    fprintf('      Consider using class weights or SMOTE oversampling\n');
+else
+    fprintf('   ✅ Class distribution is reasonably balanced\n');
+end
 
 % Calculate number of features to sample (sqrt of total features)
 NUM_FEATURES_SAMPLE = round(sqrt(size(X, 2)));
@@ -287,9 +337,15 @@ params.timestamp = timestamp;
 params.num_source_files = length(files);
 params.source_files = {files.name}; % List of all source files used
 
-params.data_type = 'balanced only';
-params.num_balanced_files = length(balanced_files);
-params.num_unbalanced_files = 0;
+if USE_ALL_DATA
+    params.data_type = 'combined (balanced + unbalanced)';
+    params.num_balanced_files = length(balanced_files);
+    params.num_unbalanced_files = length(unbalanced_files);
+else
+    params.data_type = 'balanced only';
+    params.num_balanced_files = length(balanced_files);
+    params.num_unbalanced_files = 0;
+end
 
 params_file = fullfile(MODELS_DIR, sprintf('matlab_params_%s.json', timestamp));
 json_str = jsonencode(params);
