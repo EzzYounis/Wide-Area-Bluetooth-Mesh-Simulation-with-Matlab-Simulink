@@ -8,11 +8,11 @@ clear all; close all; clc;
 
 %% Simulation Parameters
 global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE ;
-NUM_NORMAL_NODES = 50;
+NUM_NORMAL_NODES = 8;
 NUM_ATTACK_NODES = 2;
 TOTAL_NODES = NUM_NORMAL_NODES + NUM_ATTACK_NODES;
 MESSAGE_INTERVAL = 60; % seconds - INCREASED to 30 to reduce message load
-SIMULATION_TIME = 2 * 60; % 5 minutes for better forwarding analysis
+SIMULATION_TIME = 20 * 60; % 5 minutes for better forwarding analysis
 TRANSMISSION_RANGE = 50; % meterss
 AREA_SIZE = 200; % 200x200 meter area
 
@@ -848,6 +848,16 @@ function [final_result] = fuseDetectionResults(rule_result, ai_result, fusion_we
     rule_attack = ~strcmp(rule_result.primary_attack, 'NORMAL') && rule_result.overall_confidence > 0.5;
     ai_attack = ai_result.is_attack && ai_result.confidence > 0.6;  % Adjusted for corrected confidence
     
+    % DEBUG: Show what AI predicted (safe access)
+    try
+        fprintf('   [AI PREDICTION] Type: %s | is_attack: %d | confidence: %.4f | ai_attack: %d\n', ...
+            ai_result.attack_type, ai_result.is_attack, ai_result.confidence, ai_attack);
+        fprintf('   [RULE PREDICTION] Type: %s | rule_attack: %d | confidence: %.4f\n', ...
+            rule_result.primary_attack, rule_attack, rule_result.overall_confidence);
+    catch
+        fprintf('   [DEBUG ERROR] Failed to print AI/Rule predictions\n');
+    end
+    
     % Fusion logic
     if rule_attack && ai_attack
         % Both agree - high confidence
@@ -878,7 +888,7 @@ function [final_result] = fuseDetectionResults(rule_result, ai_result, fusion_we
         
     elseif rule_attack && ~ai_attack
         % Only rules detected
-        if rule_result.overall_confidence > 0.5  % Reduced from 0.8
+        if rule_result.overall_confidence > 0.90  % Raised to 0.90 - require high confidence for rule-only detection
             final_result.is_attack = true;
             final_result.attack_type = rule_result.primary_attack;
             final_result.confidence = rule_result.overall_confidence * 0.9;
@@ -2611,13 +2621,16 @@ end
 %% Attacker Functions
 function [node, attack_message] = launchAttack(node, current_time, target_nodes)
     attack_message = [];
-    if current_time - node.last_attack_time < node.attack_frequency
-        return;
-    end
-    node.last_attack_time = current_time;
-
-    % FLOODING: send messages to ONE neighbor until reaching target count, then move to next
-    if strcmp(node.attack_strategy, 'FLOODING') && isfield(node, 'neighbors') && ~isempty(node.neighbors)
+    
+    % FLOODING: send ALL messages to ONE neighbor before moving to next
+    if strcmp(node.attack_strategy, 'FLOODING')
+        % Check if node has any neighbors in range
+        if ~isfield(node, 'neighbors') || isempty(node.neighbors)
+            fprintf('Node %d (FLOODING) skipped attack - no neighbors in range\n', node.id);
+            attack_message = [];
+            return;
+        end
+        
         % Initialize counter if needed
         if ~isfield(node, 'flood_sent_count')
             node.flood_sent_count = 0;
@@ -2629,41 +2642,63 @@ function [node, attack_message] = launchAttack(node, current_time, target_nodes)
             node.flood_sent_count = 0; % Reset counter when cycling
         end
         
-        target_count_per_neighbor = 7; % Total messages to send per neighbor
+        % Use configured burst size or default to 11 (matching ADAPTIVE_FLOODING)
+        if isfield(node, 'attack_params') && isfield(node.attack_params, 'message_burst_size')
+            target_count_per_neighbor = node.attack_params.message_burst_size;
+        else
+            target_count_per_neighbor = 11; % Default: 11 messages per neighbor
+        end
+        
         neighbor_id = node.neighbors(node.flood_current_neighbor_idx);
         
-        % Send ONE message per launchAttack call
-        attack_content = generateFloodingContent(node);
-        [node, attack_message] = sendMessage(node, attack_content, 'ATTACK', neighbor_id, current_time);
+        % Send ALL messages to current neighbor in one burst
+        messages_to_send = target_count_per_neighbor - node.flood_sent_count;
         
-        if ~isempty(attack_message)
-            node.flood_sent_count = node.flood_sent_count + 1;
-            fprintf('🔥 FLOODING: Node %d → Node %d [msg %d/%d] @ t=%.2fs\n', ...
-                node.id, neighbor_id, node.flood_sent_count, target_count_per_neighbor, current_time);
+        for msg_num = 1:messages_to_send
+            attack_content = generateFloodingContent(node);
+            [node, single_attack_message] = sendMessage(node, attack_content, 'ATTACK', neighbor_id, current_time);
             
-            % Check if we've sent enough messages to current neighbor
-            if node.flood_sent_count >= target_count_per_neighbor
-                fprintf('   ✓ FINISHED flooding Node %d (%d messages sent). Moving to next neighbor.\n\n', ...
-                    neighbor_id, node.flood_sent_count);
+            if ~isempty(single_attack_message)
+                node.flood_sent_count = node.flood_sent_count + 1;
+                fprintf('🔥 FLOODING: Node %d → Node %d [msg %d/%d] @ t=%.2fs\n', ...
+                    node.id, neighbor_id, node.flood_sent_count, target_count_per_neighbor, current_time);
                 
-                % Move to next neighbor and reset counter
-                node.flood_current_neighbor_idx = node.flood_current_neighbor_idx + 1;
-                node.flood_sent_count = 0;
-                
-                % Wrap around to first neighbor if we've attacked all
-                if node.flood_current_neighbor_idx > length(node.neighbors)
-                    fprintf('   🔄 FLOODING CYCLE COMPLETE: All %d neighbors attacked. Restarting cycle.\n\n', ...
-                        length(node.neighbors));
-                    node.flood_current_neighbor_idx = 1;
+                % Store the first message to return
+                if msg_num == 1
+                    attack_message = single_attack_message;
                 end
+            end
+        end
+        
+        % After sending all messages to this neighbor, move to next
+        if node.flood_sent_count >= target_count_per_neighbor
+            fprintf('   ✓ FINISHED flooding Node %d (%d messages sent). Moving to next neighbor.\n\n', ...
+                neighbor_id, node.flood_sent_count);
+            
+            % Move to next neighbor and reset counter
+            node.flood_current_neighbor_idx = node.flood_current_neighbor_idx + 1;
+            node.flood_sent_count = 0;
+            
+            % Wrap around to first neighbor if we've attacked all
+            if node.flood_current_neighbor_idx > length(node.neighbors)
+                fprintf('   🔄 FLOODING CYCLE COMPLETE: All %d neighbors attacked. Restarting cycle.\n\n', ...
+                    length(node.neighbors));
+                node.flood_current_neighbor_idx = 1;
             end
         end
         
         return;
     end
 
-    % ADAPTIVE FLOODING: send messages to ONE neighbor until reaching target count, then move to next
-    if strcmp(node.attack_strategy, 'ADAPTIVE_FLOODING') && isfield(node, 'neighbors') && ~isempty(node.neighbors)
+    % ADAPTIVE FLOODING: send ALL messages to ONE neighbor before moving to next
+    if strcmp(node.attack_strategy, 'ADAPTIVE_FLOODING')
+        % Check if node has any neighbors in range
+        if ~isfield(node, 'neighbors') || isempty(node.neighbors)
+            fprintf('Node %d (ADAPTIVE_FLOODING) skipped attack - no neighbors in range\n', node.id);
+            attack_message = [];
+            return;
+        end
+        
         % Initialize counter if needed
         if ~isfield(node, 'af_sent_count')
             node.af_sent_count = 0;
@@ -2675,38 +2710,67 @@ function [node, attack_message] = launchAttack(node, current_time, target_nodes)
             node.af_sent_count = 0; % Reset counter when cycling
         end
         
-        target_count_per_neighbor = 25; % Total messages to send per neighbor
+        % Use configured burst size or default to 11 (as mentioned in your output)
+        if isfield(node, 'attack_params') && isfield(node.attack_params, 'message_burst_size')
+            target_count_per_neighbor = node.attack_params.message_burst_size;
+        else
+            target_count_per_neighbor = 11; % Default: 11 messages per neighbor (as per your example)
+        end
+        
         neighbor_id = node.neighbors(node.af_current_neighbor_idx);
         
-        % Send ONE message per launchAttack call
-        attack_content = generateAdaptiveFloodingContent(node);
-        [node, attack_message] = sendMessage(node, attack_content, 'ATTACK', neighbor_id, current_time);
+        % Send ALL messages to current neighbor in one burst
+        messages_to_send = target_count_per_neighbor - node.af_sent_count;
         
-        if ~isempty(attack_message)
-            node.af_sent_count = node.af_sent_count + 1;
-            fprintf('⚡ ADAPTIVE_FLOODING: Node %d → Node %d [msg %d/%d] @ t=%.2fs\n', ...
-                node.id, neighbor_id, node.af_sent_count, target_count_per_neighbor, current_time);
+        for msg_num = 1:messages_to_send
+            attack_content = generateAdaptiveFloodingContent(node);
+            [node, single_attack_message] = sendMessage(node, attack_content, 'ATTACK', neighbor_id, current_time);
             
-            % Check if we've sent enough messages to current neighbor
-            if node.af_sent_count >= target_count_per_neighbor
-                fprintf('   ✓ FINISHED flooding Node %d (%d messages sent). Moving to next neighbor.\n\n', ...
-                    neighbor_id, node.af_sent_count);
+            if ~isempty(single_attack_message)
+                node.af_sent_count = node.af_sent_count + 1;
+                fprintf('⚡ ADAPTIVE_FLOODING: Node %d → Node %d [msg %d/%d] @ t=%.2fs\n', ...
+                    node.id, neighbor_id, node.af_sent_count, target_count_per_neighbor, current_time);
                 
-                % Move to next neighbor and reset counter
-                node.af_current_neighbor_idx = node.af_current_neighbor_idx + 1;
-                node.af_sent_count = 0;
-                
-                % Wrap around to first neighbor if we've attacked all
-                if node.af_current_neighbor_idx > length(node.neighbors)
-                    fprintf('   🔄 ADAPTIVE_FLOODING CYCLE COMPLETE: All %d neighbors attacked. Restarting cycle.\n\n', ...
-                        length(node.neighbors));
-                    node.af_current_neighbor_idx = 1;
+                % Store the first message to return
+                if msg_num == 1
+                    attack_message = single_attack_message;
                 end
+            end
+        end
+        
+        % After sending all messages to this neighbor, move to next
+        if node.af_sent_count >= target_count_per_neighbor
+            fprintf('   ✓ FINISHED flooding Node %d (%d messages sent). Moving to next neighbor.\n\n', ...
+                neighbor_id, node.af_sent_count);
+            
+            % Move to next neighbor and reset counter
+            node.af_current_neighbor_idx = node.af_current_neighbor_idx + 1;
+            node.af_sent_count = 0;
+            
+            % Wrap around to first neighbor if we've attacked all
+            if node.af_current_neighbor_idx > length(node.neighbors)
+                fprintf('   🔄 ADAPTIVE_FLOODING CYCLE COMPLETE: All %d neighbors attacked. Restarting cycle.\n\n', ...
+                    length(node.neighbors));
+                node.af_current_neighbor_idx = 1;
             end
         end
         
         return;
     end
+    
+    % For other attack types (non-flooding), apply frequency throttling
+    if current_time - node.last_attack_time < node.attack_frequency
+        return;
+    end
+    node.last_attack_time = current_time;
+    
+    % Check if node has any neighbors in range before sending any attack
+    if ~isfield(node, 'neighbors') || isempty(node.neighbors)
+        fprintf('Node %d (%s) skipped attack - no neighbors in range\n', node.id, node.attack_strategy);
+        attack_message = [];
+        return;
+    end
+    
     % BLACK_HOLE: Send deceptive advertisement messages (not counted as forwarding)
     if strcmp(node.attack_strategy, 'BLACK_HOLE')
         % Black hole sends advertisement messages but should NOT count as forwarding
@@ -4768,6 +4832,12 @@ function runBluetoothMeshSimulation()
                 for msg_count = 1:num_messages
                     % Randomly select a node to send a message
                     sender_idx = active_normal_indices(randi(length(active_normal_indices)));
+                    
+                    % Check if sender has any neighbors in range before sending
+                    if isempty(nodes(sender_idx).neighbors)
+                        fprintf('Node %d skipped sending - no neighbors in range\n', nodes(sender_idx).id);
+                        continue;
+                    end
                     
                     % Choose message type randomly
                     if rand() < 0.8  % 80% chance for data message
