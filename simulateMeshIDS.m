@@ -7,7 +7,7 @@
 clear all; close all; clc;
 
 %% Simulation Parameters
-global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE ;
+global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE next_node_id;
 NUM_NORMAL_NODES = 8;
 NUM_ATTACK_NODES = 2;
 TOTAL_NODES = NUM_NORMAL_NODES + NUM_ATTACK_NODES;
@@ -15,6 +15,7 @@ MESSAGE_INTERVAL = 60; % seconds - INCREASED to 30 to reduce message load
 SIMULATION_TIME = 20 * 60; % 5 minutes for better forwarding analysis
 TRANSMISSION_RANGE = 50; % meterss
 AREA_SIZE = 200; % 200x200 meter area
+next_node_id = TOTAL_NODES + 1; % Track next available node ID for dynamic additions
 
 %% Initialize Global Variables
 global simulation_data;
@@ -4764,6 +4765,9 @@ function runBluetoothMeshSimulation()
     stats_history = struct([]);
     % Mobility variables
     next_mobility_time = randi([30,90]); % First random mobility event in 30-90 seconds
+    % Dynamic node management variables
+    next_node_removal_time = randi([45, 120]); % First node removal in 45-120 seconds
+    next_node_addition_time = randi([60, 150]); % First node addition in 60-150 seconds
 
     fprintf('Starting simulation...\n');
     fprintf('⚠️  WARNING: Feature extraction has been CORRECTED (features 15-43 reordered)\n');
@@ -4774,6 +4778,82 @@ function runBluetoothMeshSimulation()
     while current_time < SIMULATION_TIME
         simulation_data.current_time = current_time;
 
+        % Random node removal event (simulate device turning off)
+        if current_time >= next_node_removal_time
+            removable_indices = find([nodes.is_active]);
+            if length(removable_indices) > 2 % Keep at least 2 nodes active
+                remove_idx = removable_indices(randi(length(removable_indices)));
+                removed_node = nodes(remove_idx);
+                nodes(remove_idx).is_active = false;
+                
+                node_type = 'NORMAL';
+                if removed_node.is_attacker
+                    if isfield(removed_node, 'attack_strategy') && ~isempty(removed_node.attack_strategy)
+                        node_type = sprintf('ATTACKER (%s)', removed_node.attack_strategy);
+                    else
+                        node_type = 'ATTACKER';
+                    end
+                end
+                
+                fprintf('\n🔴 NODE REMOVED: Node %d (%s) left the network at time %.1f\n', ...
+                    removed_node.id, node_type, current_time);
+                fprintf('   Active nodes remaining: %d\n\n', sum([nodes.is_active]));
+                
+                % Update neighbors for all remaining nodes
+                for j = 1:length(nodes)
+                    if nodes(j).is_active
+                        nodes(j) = updateNeighbors(nodes(j), nodes, TRANSMISSION_RANGE);
+                    end
+                end
+            else
+                fprintf('\n⚠️  Cannot remove node - minimum network size reached\n\n');
+            end
+            % Schedule next removal event
+            next_node_removal_time = current_time + randi([60, 180]); % 60-180 seconds
+        end
+        
+        % Random node addition event (simulate new device joining)
+        if current_time >= next_node_addition_time
+            global next_node_id;
+            
+            % Randomly decide if adding normal or attacker node (70% normal, 30% attacker)
+            is_new_attacker = rand() < 0.3;
+            
+            % Generate random position
+            x = AREA_SIZE * rand();
+            y = AREA_SIZE * rand();
+            
+            if is_new_attacker
+                new_node = createAdvancedAttackerNode(next_node_id, x, y);
+                new_node.ids_model = shared_ids_model;
+                fprintf('\n🟡 NEW ATTACKER JOINED: Node %d (%s) joined the network at time %.1f\n', ...
+                    new_node.id, new_node.attack_strategy, current_time);
+            else
+                new_node = createNormalNode(next_node_id, x, y);
+                new_node.ids_model = shared_ids_model;
+                fprintf('\n🟢 NEW NODE JOINED: Node %d (NORMAL) joined the network at time %.1f\n', ...
+                    new_node.id, current_time);
+            end
+            
+            fprintf('   Position: [%.1f, %.1f]\n', x, y);
+            
+            % Add to nodes array
+            nodes = [nodes, new_node];
+            next_node_id = next_node_id + 1;
+            
+            % Update neighbors for all nodes
+            for j = 1:length(nodes)
+                if nodes(j).is_active
+                    nodes(j) = updateNeighbors(nodes(j), nodes, TRANSMISSION_RANGE);
+                end
+            end
+            
+            fprintf('   Active nodes now: %d\n\n', sum([nodes.is_active]));
+            
+            % Schedule next addition event
+            next_node_addition_time = current_time + randi([60, 180]); % 60-180 seconds
+        end
+        
         % Random node mobility event
         if current_time >= next_mobility_time
             movable_indices = find([nodes.is_active]);
