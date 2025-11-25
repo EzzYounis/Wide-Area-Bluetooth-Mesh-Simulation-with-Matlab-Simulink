@@ -160,7 +160,7 @@ for k = 1:length(files)
 		data.special_char_ratio(row)     = 0.5 + 0.4*rand(n,1);   % Moderate-high (malicious payloads)
 		data.numeric_ratio(row)          = 0.4 + 0.3*rand(n,1);   % Moderate
 		data.emergency_keyword_count(row)= 0.1 + 0.2*rand(n,1);   % Low (may fake emergency)
-		data.suspicious_url_count(row)   = 0.6 + 0.4*rand(n,1);   % HIGH (KEY SIGNATURE)
+		data.suspicious_url_count(row)   = 0.4 + 0.4*rand(n,1);   % HIGH (KEY SIGNATURE)
 		data.command_pattern_count(row)  = 0.5 + 0.4*rand(n,1);   % HIGH (KEY SIGNATURE)
 		% Reputation features: Low from suspicious content
 		data.sender_reputation(row)      = 0.1 + 0.3*rand(n,1);   % LOW (malicious content)

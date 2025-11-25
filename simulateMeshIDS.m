@@ -8,8 +8,8 @@ clear all; close all; clc;
 
 %% Simulation Parameters
 global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE ;
-NUM_NORMAL_NODES = 5;
-NUM_ATTACK_NODES = 1;
+NUM_NORMAL_NODES = 50;
+NUM_ATTACK_NODES = 2;
 TOTAL_NODES = NUM_NORMAL_NODES + NUM_ATTACK_NODES;
 MESSAGE_INTERVAL = 60; % seconds - INCREASED to 30 to reduce message load
 SIMULATION_TIME = 2 * 60; % 5 minutes for better forwarding analysis
@@ -44,7 +44,8 @@ function node = createAttackerNode(id, x, y)
     node.is_active = true;
     
     % Attacker-specific properties
-    strategies = {'FLOODING', 'ADAPTIVE_FLOODING', 'RESOURCE_EXHAUSTION', 'BLACK_HOLE', 'SPOOFING'};
+    %strategies = {'FLOODING', 'ADAPTIVE_FLOODING', 'RESOURCE_EXHAUSTION', 'BLACK_HOLE', 'SPOOFING'};
+    strategies = { 'BLACK_HOLE'};
     node.attack_strategy = strategies{randi(length(strategies))};
     node.attack_frequency = 15 + 10 * rand(); % INCREASED: 15-25 seconds between attacks
     node.last_attack_time = 0;
@@ -53,14 +54,21 @@ function node = createAttackerNode(id, x, y)
     node.cache_duration = 20;
     node.buffer_ttl = 300; % More aggressive: Messages expire from buffer after 300 seconds
     node.attack_params = struct(); % Will be populated by advanced attacker function
+    node.blacklisted_senders = containers.Map('KeyType', 'double', 'ValueType', 'double');
     % For adaptive flooding: track current neighbor and sent count
     node.af_current_neighbor_idx = 1;
     node.af_sent_count = 0;
     
+    % For flooding: track current neighbor and sent count
+    node.flood_current_neighbor_idx = 1;
+    node.flood_sent_count = 0;
+    
     % Initialize tracking fields for dynamic features with default values
-    % Attackers get low initial forwarding to distinguish from normal nodes
-    node.forwarded_count = 1;  % Default: low forwarding history for attackers
-    node.received_count = 5;   % Default: receiving history (1/5 = 0.2 ratio for attackers)
+    % IMPORTANT: Only BLACK_HOLE attackers should have low forwarding behavior
+    % Other attack types (FLOODING, ADAPTIVE_FLOODING, RESOURCE_EXHAUSTION, SPOOFING) forward normally
+    % We'll set proper values after attack_strategy is assigned in createAdvancedAttackerNode
+    node.forwarded_count = 5;  % Default: good forwarding (will be adjusted for BLACK_HOLE)
+    node.received_count = 5;   % Default: receiving history (5/5 = 1.0 ratio)
     node.last_position = [x, y]; % Initialize with current position
     node.total_distance_moved = 0; % Track cumulative movement
     
@@ -103,9 +111,14 @@ function node = createNormalNode(id, x, y)
     node.cache_duration = 20;
     node.buffer_ttl = 10; % More aggressive: Messages expire from buffer after 10 seconds
     node.attack_params = struct(); % Empty struct for normal nodes
+    node.blacklisted_senders = containers.Map('KeyType', 'double', 'ValueType', 'double');
     % For struct compatibility with attackers (adaptive flooding)
     node.af_current_neighbor_idx = 1;
     node.af_sent_count = 0;
+    
+    % For struct compatibility with attackers (flooding)
+    node.flood_current_neighbor_idx = 1;
+    node.flood_sent_count = 0;
     
     % Initialize additional behavioral tracking to prevent early misdetection
     node.last_processing_load = 0.3;  % Default moderate processing load
@@ -119,6 +132,9 @@ function node = createAdvancedAttackerNode(id, x, y)
     node = createAttackerNode(id, x, y); % Use base function
     
     % Enhanced attack strategies with specific parameters
+    % IMPORTANT FORWARDING BEHAVIOR:
+    % - BLACK_HOLE: Drops all received messages (handled in receiveMessage), low forwarding_count
+    % - FLOODING, ADAPTIVE_FLOODING, RESOURCE_EXHAUSTION, SPOOFING: Forward messages normally like regular nodes
     advanced_strategies = {
         'FLOODING', 'ADAPTIVE_FLOODING', 'RESOURCE_EXHAUSTION', 'BLACK_HOLE', 'SPOOFING'
     };
@@ -150,6 +166,9 @@ function node = createAdvancedAttackerNode(id, x, y)
             node.attack_frequency = 1 + rand(); % Very fast: 1-2 seconds (aggressive flooding)
         case 'BLACK_HOLE'
             node.attack_frequency = 40 + 20 * rand(); % Less frequent: 40-60 seconds
+            % CRITICAL: BLACK_HOLE is the ONLY attack type with poor forwarding behavior
+            node.forwarded_count = 1;  % Very low forwarding history for BLACK_HOLE
+            node.received_count = 5;   % Normal receiving (1/5 = 0.2 ratio - drops most packets)
         case 'SPOOFING'
             node.attack_frequency = 40 + 20 * rand(); % Less frequent: 40-60 seconds (stealthy spoofing)
         case 'RESOURCE_EXHAUSTION'
@@ -157,6 +176,9 @@ function node = createAdvancedAttackerNode(id, x, y)
         otherwise
             node.attack_frequency = base_frequency + randi(10); % Default: 20-30 seconds
     end
+    
+    % All non-BLACK_HOLE attackers maintain good forwarding behavior by default
+    % (forwarded_count = 5, received_count = 5 already set in createAttackerNode)
     end
 
 
@@ -255,6 +277,19 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
         return;
     end
 
+    % BLACK_HOLE ATTACK: Drop ALL received messages immediately (highest priority check)
+    % Black hole attackers silently drop everything - no logging, no buffering, no forwarding
+    % This is the DEFINING characteristic of a BLACK_HOLE attack
+    if node.is_attacker && isfield(node, 'attack_strategy') && ~isempty(node.attack_strategy)
+        if strcmpi(node.attack_strategy, 'BLACK_HOLE')  % Case-insensitive comparison
+            fprintf('🕳️  BLACK_HOLE: Node %d silently dropped message %s (source: %d)\n', ...
+                node.id, message.id, message.source_id);
+            % Do NOT increment received_count - black holes don't "receive" in the normal sense
+            % Do NOT buffer, cache, or process - everything is discarded
+            return;
+        end
+    end
+
     % Only increment received_count if message is truly eligible for forwarding
     % (not duplicate, not dropped, not blocked, not expired, not black hole)
     if nodeHasMessage(node, message.id)
@@ -262,10 +297,18 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
         return;
     end
 
-    % Black hole attack: drop all received messages, do not buffer or forward
-    if node.is_attacker && isfield(node, 'attack_strategy') && strcmp(node.attack_strategy, 'BLACK_HOLE')
-        fprintf('BLACK HOLE: Node %d dropped message %s\n', node.id, message.id);
-        return;
+    % Check if sender is blacklisted (previously detected as attacker)
+    if isfield(node, 'blacklisted_senders') && isKey(node.blacklisted_senders, message.source_id)
+        blacklist_time = node.blacklisted_senders(message.source_id);
+        blacklist_duration = 60; % Block for 60 seconds
+        if current_time - blacklist_time < blacklist_duration
+            fprintf('Node %d DROPPED message %s from BLACKLISTED sender %d (blocked %.1fs ago)\n', ...
+                node.id, message.id, message.source_id, current_time - blacklist_time);
+            return; % Drop message from blacklisted sender
+        else
+            % Blacklist expired, remove from list
+            remove(node.blacklisted_senders, message.source_id);
+        end
     end
 
     % Clean up expired messages from buffer before checking capacity
@@ -317,6 +360,12 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
             fprintf('Node %d BLOCKED message %s (reason: %s, confidence: %.2f) - NOT FORWARDING\n', ...
                 node.id, message.id, detection_result.attack_type, detection_result.confidence);
 
+            % CRITICAL: Purge ALL cached messages from this attacker
+            [node, num_purged] = purgeCachedMessagesFromSender(node, message.source_id, current_time);
+            if num_purged > 0
+                fprintf('   └─ PURGED %d cached messages from attacker Node %d\n', num_purged, message.source_id);
+            end
+
             % Consume battery but DO NOT cache for forwarding
             node.battery_level = node.battery_level - 0.0005;
             return; % Exit without caching - message will NOT be forwarded
@@ -324,46 +373,35 @@ function [node, detection_result] = receiveMessage(node, message, current_time, 
         % Only increment received_count if message is not blocked
         node.received_count = node.received_count + 1;
     else
-        % Even attackers should log received messages for completeness
+        % Attacker nodes: log received messages for completeness
         logMessageDetails(message, [], node, current_time);
         % Also log features for messages received by attackers
         logFeatureData(message, current_time, node, sender_node);
         % Only increment received_count for attackers if not blocked (attackers don't block)
-        node.received_count = node.received_count + 1;
+        % CRITICAL: BLACK_HOLE nodes should have already returned above, but double-check here
+        is_blackhole = isfield(node, 'attack_strategy') && ~isempty(node.attack_strategy) && strcmpi(node.attack_strategy, 'BLACK_HOLE');
+        if ~is_blackhole
+            node.received_count = node.received_count + 1;
+        end
     end
 
-    % CRITICAL: Run IDS detection BEFORE caching for forwarding
-    if ~node.is_attacker
-        [node, detection_result] = runIDSDetection(node, message, sender_node, current_time);
-        logMessageDetails(message, detection_result, node, current_time);
-        
-        % BLOCKING DECISION: Only cache for forwarding if IDS approves
-        if detection_result.is_attack && detection_result.confidence > detection_confidence_threshold
-            message.blocked = true;
-            message.block_reason = detection_result.attack_type;
-            fprintf('Node %d BLOCKED message %s (reason: %s, confidence: %.2f) - NOT FORWARDING\n', ...
-                node.id, message.id, detection_result.attack_type, detection_result.confidence);
-            
-            % Consume battery but DO NOT cache for forwarding
-            node.battery_level = node.battery_level - 0.0005;
-            return; % Exit without caching - message will NOT be forwarded
-        end
-    else
-        % Even attackers should log received messages for completeness
-        logMessageDetails(message, [], node, current_time);
-        % Also log features for messages received by attackers
-        logFeatureData(message, current_time, node, sender_node);
-    end
 
     % ONLY CACHE FOR FORWARDING IF IDS APPROVED (or no IDS on attacker)
-    cache_entry = struct();
-    cache_entry.message = message;
-    cache_entry.cache_time = current_time;
-    cache_entry.forwarded_to = []; % Track which neighbors already received it
-    
-    node.message_cache(message.id) = cache_entry;
-    
-    fprintf('Node %d cached message %s for forwarding (IDS approved)\n', node.id, message.id);
+    % CRITICAL: BLACK_HOLE attackers should NOT cache - they already returned earlier
+    % Double-check: if this is a BLACK_HOLE node, do NOT cache
+    is_blackhole = node.is_attacker && isfield(node, 'attack_strategy') && ~isempty(node.attack_strategy) && strcmpi(node.attack_strategy, 'BLACK_HOLE');
+    if ~is_blackhole
+        cache_entry = struct();
+        cache_entry.message = message;
+        cache_entry.cache_time = current_time;
+        cache_entry.forwarded_to = []; % Track which neighbors already received it
+        
+        node.message_cache(message.id) = cache_entry;
+        
+        fprintf('Node %d cached message %s for forwarding (IDS approved)\n', node.id, message.id);
+    else
+        fprintf('🕳️  BLACK_HOLE: Node %d will NOT cache message %s (drops all received messages)\n', node.id, message.id);
+    end
 
     % Consume battery
     node.battery_level = node.battery_level - 0.0005;
@@ -423,48 +461,59 @@ function [rule_result] = runRuleBasedDetection(node, message, sender_node, curre
     resource_exhaustion_score = 0;
     resource_exhaustion_reasons = {};
     
-    % Primary indicator: Very large message (weight: 2 - strong indicator)
-    if features(8) > 0.9   % message_length
-        resource_exhaustion_score = resource_exhaustion_score + 2;
-        resource_exhaustion_reasons{end+1} = sprintf('Very large message (%.2f > 0.9)', features(8));
-    elseif features(8) > 0.7   % Large message
-        resource_exhaustion_score = resource_exhaustion_score + 1;
-        resource_exhaustion_reasons{end+1} = sprintf('Large message (%.2f > 0.7)', features(8));
-    end
+    % CRITICAL PRE-CHECK: Exclude if flooding activity present (RESOURCE_EXHAUSTION vs FLOODING disambiguation)
+    % RESOURCE_EXHAUSTION: Large messages at LOW frequency (targeted exhaustion)
+    % FLOODING: Many messages (any size) at HIGH frequency (volume attack)
+    has_flooding_activity = (features(16) >= 0.40) || (features(17) >= 0.50) || (features(20) > 0.50);
     
-    % Secondary indicators (weight: 1 each) - TIGHTENED to reduce false positives
-    if features(32) > 0.85  % battery_impact - RAISED from 0.15 to 0.85 (only severe battery drain)
-        resource_exhaustion_score = resource_exhaustion_score + 1;
-        resource_exhaustion_reasons{end+1} = sprintf('Battery impact (%.2f > 0.85)', features(32));
-    end
-    if features(34) > 0.75  % resource_utilization - RAISED from 0.5 to 0.75 (only high utilization)
-        resource_exhaustion_score = resource_exhaustion_score + 1;
-        resource_exhaustion_reasons{end+1} = sprintf('High resource utilization (%.2f > 0.75)', features(34));
-    end
-    if features(36) > 0.85  % resource_exhaustion - RAISED from 0.15 to 0.85 (only severe exhaustion)
-        resource_exhaustion_score = resource_exhaustion_score + 1;
-        resource_exhaustion_reasons{end+1} = sprintf('Resource exhaustion detected (%.2f > 0.85)', features(36));
-    end
-    
-    % NEW: Command patterns with large messages indicate resource exhaustion attacks
-    if features(14) > 0.8 && features(8) > 0.7  % High command patterns + large message
-        resource_exhaustion_score = resource_exhaustion_score + 1.5;
-        resource_exhaustion_reasons{end+1} = sprintf('Command patterns in large message (cmd:%.2f, size:%.2f)', features(14), features(8));
-    end
-    
-    % Tertiary indicators (weight: 0.5 each) - COMBINED to reduce false positives
-    % CRITICAL: Require BOTH frequency AND volume anomaly to be high together
-    if features(20) > 0.75 && features(16) > 0.30  % RAISED thresholds - both must be present
-        resource_exhaustion_score = resource_exhaustion_score + 1.0;  % Combined weight
-        resource_exhaustion_reasons{end+1} = sprintf('High frequency + volume anomaly (freq:%.2f > 0.30, vol:%.2f > 0.75)', features(16), features(20));
-    end
-    
-    % Trigger if score >= 2.5 (reduced from 3 - need primary + 1 secondary OR multiple secondaries)
-    if resource_exhaustion_score >= 2.5
-        rule_result.detected_attacks{end+1} = 'RESOURCE_EXHAUSTION';
-        rule_result.confidences(end+1) = min(0.95, 0.75 + (resource_exhaustion_score - 2.5) * 0.05);
-        rule_result.triggered_rules{end+1} = sprintf('enhanced_resource_exhaustion: %s (score=%.1f)', strjoin(resource_exhaustion_reasons, ' + '), resource_exhaustion_score);
-        fprintf('RULE TRIGGER: Enhanced Resource Exhaustion detected - %s (score=%.1f)\n', strjoin(resource_exhaustion_reasons, ' and '), resource_exhaustion_score);
+    if has_flooding_activity
+        % Skip RESOURCE_EXHAUSTION rule - this is flooding, not targeted exhaustion
+        % Flooding uses volume, exhaustion uses message characteristics at low frequency
+    else
+        % Primary indicator: Very large message (weight: 2 - strong indicator)
+        if features(8) > 0.9   % message_length
+            resource_exhaustion_score = resource_exhaustion_score + 2;
+            resource_exhaustion_reasons{end+1} = sprintf('Very large message (%.2f > 0.9)', features(8));
+        elseif features(8) > 0.7   % Large message
+            resource_exhaustion_score = resource_exhaustion_score + 1;
+            resource_exhaustion_reasons{end+1} = sprintf('Large message (%.2f > 0.7)', features(8));
+        end
+        
+        % Secondary indicators (weight: 1 each) - TIGHTENED to reduce false positives
+        if features(32) > 0.85  % battery_impact - RAISED from 0.15 to 0.85 (only severe battery drain)
+            resource_exhaustion_score = resource_exhaustion_score + 1;
+            resource_exhaustion_reasons{end+1} = sprintf('Battery impact (%.2f > 0.85)', features(32));
+        end
+        if features(34) > 0.75  % resource_utilization - RAISED from 0.5 to 0.75 (only high utilization)
+            resource_exhaustion_score = resource_exhaustion_score + 1;
+            resource_exhaustion_reasons{end+1} = sprintf('High resource utilization (%.2f > 0.75)', features(34));
+        end
+        if features(36) > 0.85  % resource_exhaustion - RAISED from 0.15 to 0.85 (only severe exhaustion)
+            resource_exhaustion_score = resource_exhaustion_score + 1;
+            resource_exhaustion_reasons{end+1} = sprintf('Resource exhaustion detected (%.2f > 0.85)', features(36));
+        end
+        
+        % NEW: Command patterns with large messages indicate resource exhaustion attacks
+        if features(14) > 0.8 && features(8) > 0.7  % High command patterns + large message
+            resource_exhaustion_score = resource_exhaustion_score + 1.5;
+            resource_exhaustion_reasons{end+1} = sprintf('Command patterns in large message (cmd:%.2f, size:%.2f)', features(14), features(8));
+        end
+        
+        % Tertiary indicators (weight: 0.5 each) - STRICTER to reduce false positives
+        % CRITICAL: Only flag low frequency (<0.30) with volume anomaly for exhaustion
+        % (High frequency = flooding, not exhaustion)
+        if features(20) > 0.75 && features(16) < 0.30  % INVERTED: LOW frequency + high volume anomaly
+            resource_exhaustion_score = resource_exhaustion_score + 1.0;  % Combined weight
+            resource_exhaustion_reasons{end+1} = sprintf('Low frequency + volume anomaly (freq:%.2f < 0.30, vol:%.2f > 0.75)', features(16), features(20));
+        end
+        
+        % Trigger if score >= 2.5 (reduced from 3 - need primary + 1 secondary OR multiple secondaries)
+        if resource_exhaustion_score >= 2.5
+            rule_result.detected_attacks{end+1} = 'RESOURCE_EXHAUSTION';
+            rule_result.confidences(end+1) = min(0.95, 0.75 + (resource_exhaustion_score - 2.5) * 0.05);
+            rule_result.triggered_rules{end+1} = sprintf('enhanced_resource_exhaustion: %s (score=%.1f)', strjoin(resource_exhaustion_reasons, ' + '), resource_exhaustion_score);
+            fprintf('RULE TRIGGER: Enhanced Resource Exhaustion detected - %s (score=%.1f)\n', strjoin(resource_exhaustion_reasons, ' and '), resource_exhaustion_score);
+        end
     end
     
      % Rule 1: Enhanced Flooding Detection (IMPROVED - more sensitive to high frequency)
@@ -506,9 +555,10 @@ function [rule_result] = runRuleBasedDetection(node, message, sender_node, curre
     spoofing_score = 0;
     spoof_reasons = {};
     
-    % Primary indicators (higher weight)
+    % Primary indicators (higher weight) - INCREASED SENSITIVITY
     if features(13) >= rules.spoofing.suspicious_url_count
-        weight = min(2.0, 0.5 + features(13) * 0.3); % Scale with URL count
+        % IMPROVED: Much stronger weight for suspicious URLs (was 0.5 + features(13) * 0.3)
+        weight = min(2.5, 1.0 + features(13) * 2.0); % Scale aggressively with URL count
         spoofing_score = spoofing_score + weight;
         spoof_reasons{end+1} = sprintf('Suspicious URLs (%.1f)', features(13));
     end
@@ -519,7 +569,7 @@ function [rule_result] = runRuleBasedDetection(node, message, sender_node, curre
         spoof_reasons{end+1} = sprintf('Low reputation (%.2f)', features(21));
     end
     
-    % Secondary indicators (moderate weight)
+    % Secondary indicators (moderate weight) - INCREASED SENSITIVITY
     if features(12) >= rules.spoofing.emergency_keyword_abuse
         weight = min(1.0, features(12) * 2); % Scale with keyword count
         spoofing_score = spoofing_score + weight;
@@ -527,13 +577,15 @@ function [rule_result] = runRuleBasedDetection(node, message, sender_node, curre
     end
     
     if features(24) <= rules.spoofing.protocol_compliance_threshold
-        weight = 1.0 * (1 - features(24)); % Poor compliance = higher score
+        % IMPROVED: Stronger weight for protocol violations (was 1.0)
+        weight = 1.5 * (1 - features(24)); % Poor compliance = higher score
         spoofing_score = spoofing_score + weight;
         spoof_reasons{end+1} = sprintf('Protocol violation (%.2f)', features(24));
     end
     
     if features(14) >= rules.spoofing.command_pattern_threshold
-        weight = min(0.8, features(14) * 1.5); % Command patterns suspicious
+        % IMPROVED: Stronger weight for command patterns (was min(0.8, features(14) * 1.5))
+        weight = min(1.2, features(14) * 2.0); % Command patterns suspicious
         spoofing_score = spoofing_score + weight;
         spoof_reasons{end+1} = sprintf('Command patterns (%.2f)', features(14));
     end
@@ -544,8 +596,8 @@ function [rule_result] = runRuleBasedDetection(node, message, sender_node, curre
         spoof_reasons{end+1} = 'Header integrity issue';
     end
     
-    % Trigger if score >= 2.0 (need at least 2 moderate indicators or 1 strong + 1 weak)
-    if spoofing_score >= 2.0
+    % LOWERED THRESHOLD: Trigger if score >= 1.8 (was 2.0) - more sensitive to spoofing
+    if spoofing_score >= 1.8
         rule_result.detected_attacks{end+1} = 'SPOOFING';
         rule_result.confidences(end+1) = rules.spoofing.confidence * min(1.0, spoofing_score / 3.0);
         rule_result.triggered_rules{end+1} = sprintf('spoofing_detection: %s', strjoin(spoof_reasons, ' + '));
@@ -641,36 +693,42 @@ function [rule_result] = runRuleBasedDetection(node, message, sender_node, curre
     resource_reasons = {};
     resource_score = 0;
     
-    % Large message size is primary indicator (weight: 2)
-    if features(8) > rules.resource_exhaustion.message_size_threshold
-        resource_score = resource_score + 2;
-        resource_reasons{end+1} = sprintf('Large msg size (%.2f > %.2f)', features(8), rules.resource_exhaustion.message_size_threshold);
-    end
+    % CRITICAL PRE-CHECK: Exclude if flooding activity present (same as enhanced rule)
+    % RESOURCE_EXHAUSTION: Large messages at LOW frequency (targeted exhaustion)
+    % FLOODING: Many messages (any size) at HIGH frequency (volume attack)
+    has_flooding_activity_rule3 = (features(16) >= 0.40) || (features(17) >= 0.50) || (features(20) > 0.50);
     
-    % Secondary indicators (weight: 1 each) - TIGHTENED to match enhanced rule
-    if features(16) > 0.30  % message_frequency - RAISED from 0.15 to 0.30 (require higher frequency)
-        resource_score = resource_score + 1;
-        resource_reasons{end+1} = sprintf('High frequency (%.2f > 0.30)', features(16));
-    end
-    if features(32) > 0.85  % battery_impact - RAISED from 0.15 to 0.85 (require severe battery drain)
-        resource_score = resource_score + 1;
-        resource_reasons{end+1} = sprintf('Severe battery impact (%.2f > 0.85)', features(32));
-    end
-    if features(34) > 0.75  % resource_utilization - RAISED from 0.5 to 0.75 (require high utilization)
-        resource_score = resource_score + 1;
-        resource_reasons{end+1} = sprintf('High resource utilization (%.2f > 0.75)', features(34));
-    end
-    if features(36) > 0.85  % resource_exhaustion feature - RAISED from 0.15 to 0.85 (require severe exhaustion)
-        resource_score = resource_score + 1;
-        resource_reasons{end+1} = sprintf('Severe resource exhaustion (%.2f > 0.85)', features(36));
-    end
-    
-    % Trigger if score >= 2 (need primary OR multiple secondary indicators)
-    if resource_score >= 2
-        rule_result.detected_attacks{end+1} = 'RESOURCE_EXHAUSTION';
-        rule_result.confidences(end+1) = min(0.95, rules.resource_exhaustion.confidence + (resource_score - 2) * 0.05);
-        rule_result.triggered_rules{end+1} = sprintf('resource_exhaustion_detection: %s (score=%.1f)', strjoin(resource_reasons, ' + '), resource_score);
-        fprintf('RULE TRIGGER: Resource exhaustion detected - %s (score=%.1f)\n', strjoin(resource_reasons, ' and '), resource_score);
+    if ~has_flooding_activity_rule3
+        % Large message size is primary indicator (weight: 2)
+        if features(8) > rules.resource_exhaustion.message_size_threshold
+            resource_score = resource_score + 2;
+            resource_reasons{end+1} = sprintf('Large msg size (%.2f > %.2f)', features(8), rules.resource_exhaustion.message_size_threshold);
+        end
+        
+        % Secondary indicators (weight: 1 each) - TIGHTENED to match enhanced rule
+        % REMOVED: High frequency check - exhaustion should be at LOW frequency
+        % if features(16) > 0.30 was here - removed because it conflicts with exhaustion definition
+        
+        if features(32) > 0.85  % battery_impact - RAISED from 0.15 to 0.85 (require severe battery drain)
+            resource_score = resource_score + 1;
+            resource_reasons{end+1} = sprintf('Severe battery impact (%.2f > 0.85)', features(32));
+        end
+        if features(34) > 0.75  % resource_utilization - RAISED from 0.5 to 0.75 (require high utilization)
+            resource_score = resource_score + 1;
+            resource_reasons{end+1} = sprintf('High resource utilization (%.2f > 0.75)', features(34));
+        end
+        if features(36) > 0.85  % resource_exhaustion feature - RAISED from 0.15 to 0.85 (require severe exhaustion)
+            resource_score = resource_score + 1;
+            resource_reasons{end+1} = sprintf('Severe resource exhaustion (%.2f > 0.85)', features(36));
+        end
+        
+        % Trigger if score >= 2 (need primary OR multiple secondary indicators)
+        if resource_score >= 2
+            rule_result.detected_attacks{end+1} = 'RESOURCE_EXHAUSTION';
+            rule_result.confidences(end+1) = min(0.95, rules.resource_exhaustion.confidence + (resource_score - 2) * 0.05);
+            rule_result.triggered_rules{end+1} = sprintf('resource_exhaustion_detection: %s (score=%.1f)', strjoin(resource_reasons, ' + '), resource_score);
+            fprintf('RULE TRIGGER: Resource exhaustion detected - %s (score=%.1f)\n', strjoin(resource_reasons, ' and '), resource_score);
+        end
     end
     
     % Rule 4: Black Hole Detection (BALANCED - detect low forwarding without flooding)
@@ -956,6 +1014,14 @@ function [node, detection_result] = runIDSDetection(node, message, sender_node, 
     detection_result.detector_id = node.id;
     detection_result.timestamp = current_time;
     
+    % Store original features and sender_node_id for accurate logging
+    detection_result.features = features;
+    if ~isempty(sender_node)
+        detection_result.sender_node_id = sender_node.id;
+    else
+        detection_result.sender_node_id = [];
+    end
+    
     % NEW: Add hybrid-specific information
     if node.ids_model.hybrid_mode && exist('fused_result', 'var')
         detection_result.fusion_method = fused_result.fusion_method;
@@ -967,6 +1033,12 @@ function [node, detection_result] = runIDSDetection(node, message, sender_node, 
     
     % Process detection result
     node = processDetectionResult(node, detection_result, message);
+    
+    % CRITICAL: If attack detected, purge all cached messages from this sender
+    % Use threshold of 0.5 (same as blocking threshold in receiveMessage)
+    if detection_result.is_attack && detection_result.confidence > 0.5
+        [node, ~] = purgeCachedMessagesFromSender(node, message.source_id, current_time);
+    end
     
     % Add to global detection log
     global simulation_data;
@@ -2140,14 +2212,25 @@ function [is_attack, attack_type, confidence] = predictAttack(ids_model, feature
                     
                     is_attack = ~strcmp(attack_type, 'NORMAL');
                     
-                    % CRITICAL FIX: Post-prediction sanity check for BLACK_HOLE
-                    % BLACK_HOLE requires VERY LOW forwarding (<0.15), not moderate/high forwarding
+                    % CRITICAL OVERRIDE: BLACK_HOLE requires LOW forwarding_behavior as key signature
+                    % If AI predicts BLACK_HOLE but forwarding_behavior >= 0.35, override to NORMAL
+                    % This prevents false positives on normal nodes with legitimate traffic patterns
                     if strcmp(attack_type, 'BLACK_HOLE') && features(33) >= 0.35
-                        % Override: This is NOT a black hole - forwarding behavior is too high
+                        % Forwarding behavior is reasonable/high - this is NOT a black hole
+                        % Black holes have forwarding < 0.35 (drop >65% of packets)
+                        old_reasoning = '';
+                        if isfield(ids_model, 'last_ai_reasoning')
+                            old_reasoning = ids_model.last_ai_reasoning;
+                        end
                         attack_type = 'NORMAL';
                         is_attack = false;
-                        confidence = max(0.1, 1.0 - confidence); % Invert confidence
-                        fprintf('   AI BLACK_HOLE override: forwarding_behavior=%.4f >= 0.35, reclassified as NORMAL\n', features(33));
+                        confidence = 0.9; % High confidence it's normal
+                        if ~isempty(old_reasoning)
+                            ids_model.last_ai_reasoning = sprintf('%s | OVERRIDE: forwarding_behavior(%.4f) >= 0.35, reclassified as NORMAL', ...
+                                old_reasoning, features(33));
+                        else
+                            ids_model.last_ai_reasoning = sprintf('OVERRIDE: BLACK_HOLE→NORMAL (forwarding_behavior=%.4f >= 0.35)', features(33));
+                        end
                     end
                     
                     % Generate TreeBagger reasoning based on class scores
@@ -2491,8 +2574,16 @@ function node = processDetectionResult(node, detection_result, original_message)
             node.id, detection_result.attack_type, real_attack_type, detection_result.confidence, detection_source);
     end
     fprintf('   └─ Reason: %s | Message: %s\n', detection_reason, detection_result.message_id);
+    
     % Print all message features for the detected message (for both correct and misclassified)
-    features_for_print = extractMessageFeatures(node, original_message, [], detection_result.timestamp);
+    % Use stored features from detection_result if available (more accurate)
+    if isfield(detection_result, 'features') && ~isempty(detection_result.features)
+        features_for_print = detection_result.features;
+    else
+        % Fallback: re-extract features (less accurate due to missing sender context)
+        features_for_print = extractMessageFeatures(node, original_message, [], detection_result.timestamp);
+    end
+    
     fprintf('   └─ Features: [');
     fprintf('%.4f ', features_for_print);
     fprintf(']\n');
@@ -2525,59 +2616,117 @@ function [node, attack_message] = launchAttack(node, current_time, target_nodes)
     end
     node.last_attack_time = current_time;
 
-    % FLOODING: burst to all neighbors
+    % FLOODING: send messages to ONE neighbor until reaching target count, then move to next
     if strcmp(node.attack_strategy, 'FLOODING') && isfield(node, 'neighbors') && ~isempty(node.neighbors)
-        burst_size = 7; % Number of messages per neighbor (can be parameterized)
-        attack_message = [];
+        % Initialize counter if needed
+        if ~isfield(node, 'flood_sent_count')
+            node.flood_sent_count = 0;
+        end
         
-        fprintf('\n🔥 FLOODING ATTACK INITIATED: Node %d @ t=%.2fs\n', node.id, current_time);
-        fprintf('   └─ Sending %d messages to EACH of %d neighbors (Total: %d messages)\n', ...
-            burst_size, length(node.neighbors), burst_size * length(node.neighbors));
+        % Ensure index is valid
+        if node.flood_current_neighbor_idx > length(node.neighbors)
+            node.flood_current_neighbor_idx = 1;
+            node.flood_sent_count = 0; % Reset counter when cycling
+        end
         
-        total_sent = 0;
-        for n = 1:length(node.neighbors)
-            neighbor_id = node.neighbors(n);
-            fprintf('   └─ Target Neighbor %d: ', neighbor_id);
-            sent_to_neighbor = 0;
+        target_count_per_neighbor = 7; % Total messages to send per neighbor
+        neighbor_id = node.neighbors(node.flood_current_neighbor_idx);
+        
+        % Send ONE message per launchAttack call
+        attack_content = generateFloodingContent(node);
+        [node, attack_message] = sendMessage(node, attack_content, 'ATTACK', neighbor_id, current_time);
+        
+        if ~isempty(attack_message)
+            node.flood_sent_count = node.flood_sent_count + 1;
+            fprintf('🔥 FLOODING: Node %d → Node %d [msg %d/%d] @ t=%.2fs\n', ...
+                node.id, neighbor_id, node.flood_sent_count, target_count_per_neighbor, current_time);
             
-            for b = 1:burst_size
-                attack_content = generateFloodingContent(node);
-                [node, msg] = sendMessage(node, attack_content, 'ATTACK', neighbor_id, current_time + 1e-4*b + 1e-2*n); % Slightly stagger timestamps
-                if ~isempty(msg)
-                    attack_message = msg; % Return the last message (for logging)
-                    fprintf('[%s] ', msg.id);
-                    sent_to_neighbor = sent_to_neighbor + 1;
-                    total_sent = total_sent + 1;
+            % Check if we've sent enough messages to current neighbor
+            if node.flood_sent_count >= target_count_per_neighbor
+                fprintf('   ✓ FINISHED flooding Node %d (%d messages sent). Moving to next neighbor.\n\n', ...
+                    neighbor_id, node.flood_sent_count);
+                
+                % Move to next neighbor and reset counter
+                node.flood_current_neighbor_idx = node.flood_current_neighbor_idx + 1;
+                node.flood_sent_count = 0;
+                
+                % Wrap around to first neighbor if we've attacked all
+                if node.flood_current_neighbor_idx > length(node.neighbors)
+                    fprintf('   🔄 FLOODING CYCLE COMPLETE: All %d neighbors attacked. Restarting cycle.\n\n', ...
+                        length(node.neighbors));
+                    node.flood_current_neighbor_idx = 1;
                 end
             end
-            fprintf('(%d sent)\n', sent_to_neighbor);
         end
-        fprintf('   ✓ FLOODING BURST COMPLETE: %d/%d messages sent successfully\n\n', total_sent, burst_size * length(node.neighbors));
+        
         return;
     end
 
-    % ADAPTIVE FLOODING: send 25 messages to each neighbor before moving to next
+    % ADAPTIVE FLOODING: send messages to ONE neighbor until reaching target count, then move to next
     if strcmp(node.attack_strategy, 'ADAPTIVE_FLOODING') && isfield(node, 'neighbors') && ~isempty(node.neighbors)
+        % Initialize counter if needed
+        if ~isfield(node, 'af_sent_count')
+            node.af_sent_count = 0;
+        end
+        
         % Ensure af_current_neighbor_idx is valid
         if node.af_current_neighbor_idx > length(node.neighbors)
             node.af_current_neighbor_idx = 1;
-            node.af_sent_count = 0;
+            node.af_sent_count = 0; % Reset counter when cycling
         end
+        
+        target_count_per_neighbor = 25; % Total messages to send per neighbor
         neighbor_id = node.neighbors(node.af_current_neighbor_idx);
+        
+        % Send ONE message per launchAttack call
         attack_content = generateAdaptiveFloodingContent(node);
         [node, attack_message] = sendMessage(node, attack_content, 'ATTACK', neighbor_id, current_time);
-        node.af_sent_count = node.af_sent_count + 1;
-        % After 25 messages, move to next neighbor
-        if node.af_sent_count >= 25
-            node.af_current_neighbor_idx = node.af_current_neighbor_idx + 1;
-            node.af_sent_count = 0;
-            if node.af_current_neighbor_idx > length(node.neighbors)
-                node.af_current_neighbor_idx = 1;
+        
+        if ~isempty(attack_message)
+            node.af_sent_count = node.af_sent_count + 1;
+            fprintf('⚡ ADAPTIVE_FLOODING: Node %d → Node %d [msg %d/%d] @ t=%.2fs\n', ...
+                node.id, neighbor_id, node.af_sent_count, target_count_per_neighbor, current_time);
+            
+            % Check if we've sent enough messages to current neighbor
+            if node.af_sent_count >= target_count_per_neighbor
+                fprintf('   ✓ FINISHED flooding Node %d (%d messages sent). Moving to next neighbor.\n\n', ...
+                    neighbor_id, node.af_sent_count);
+                
+                % Move to next neighbor and reset counter
+                node.af_current_neighbor_idx = node.af_current_neighbor_idx + 1;
+                node.af_sent_count = 0;
+                
+                % Wrap around to first neighbor if we've attacked all
+                if node.af_current_neighbor_idx > length(node.neighbors)
+                    fprintf('   🔄 ADAPTIVE_FLOODING CYCLE COMPLETE: All %d neighbors attacked. Restarting cycle.\n\n', ...
+                        length(node.neighbors));
+                    node.af_current_neighbor_idx = 1;
+                end
             end
         end
-        fprintf('ADAPTIVE FLOODING: Node %d sent attack %d/25 to neighbor %d at time %.2f\n', node.id, node.af_sent_count, neighbor_id, current_time);
+        
         return;
     end
+    % BLACK_HOLE: Send deceptive advertisement messages (not counted as forwarding)
+    if strcmp(node.attack_strategy, 'BLACK_HOLE')
+        % Black hole sends advertisement messages but should NOT count as forwarding
+        % These are deceptive messages to attract traffic, not legitimate forwarding
+        if ~isempty(target_nodes)
+            target_id = target_nodes(randi(length(target_nodes)));
+        else
+            target_id = randi(15); % Random normal node
+        end
+        attack_content = generateBlackHoleContent(node);
+        fprintf('\n🕳️  BLACK_HOLE ATTACK: Node %d → Target Node %d @ t=%.2fs\n', ...
+            node.id, target_id, current_time);
+        fprintf('   └─ Sending deceptive advertisement to attract traffic...\n');
+        [node, attack_message] = sendMessage(node, attack_content, 'ATTACK', target_id, current_time);
+        % BLACK_HOLE: Do NOT increment forwarded_count for attack messages
+        % This ensures forwarding_behavior metric stays low (key BLACK_HOLE signature)
+        fprintf('   └─ BLACK_HOLE attack message sent (NOT counted as forwarding)\n\n');
+        return;
+    end
+    
     % Default: single attack message to random target
     if ~isempty(target_nodes)
         target_id = target_nodes(randi(length(target_nodes)));
@@ -3976,10 +4125,10 @@ function saveSimulationResults(nodes, stats_history)
     % Generate timestamp for filenames
     timestamp = datestr(now, 'yyyymmdd_HHMMSS');
     
-    % Save simulation data
+    % Save simulation data using MAT-file version 7.3 for large variables (>2GB)
     filename = fullfile(results_dir, sprintf('simulation_data_%s.mat', timestamp));
     save(filename, 'nodes', 'stats_history', 'simulation_data', 'NUM_NORMAL_NODES', ...
-         'NUM_ATTACK_NODES', 'SIMULATION_TIME', 'MESSAGE_INTERVAL');
+         'NUM_ATTACK_NODES', 'SIMULATION_TIME', 'MESSAGE_INTERVAL', '-v7.3');
     
     fprintf('Simulation results saved to: %s\n', filename);
     
@@ -4192,6 +4341,34 @@ function shared_model = createSharedIDSModel()
     % Load pre-trained model instead of training new one
     shared_model = loadPretrainedModel(shared_model);
 end
+
+function [node, num_purged] = purgeCachedMessagesFromSender(node, sender_id, current_time)
+    % Purge all cached messages from a specific sender (detected attacker)
+    % Also blacklist the sender to prevent future messages from being cached
+    
+    num_purged = 0;
+    message_ids = keys(node.message_cache);
+    
+    for i = 1:length(message_ids)
+        msg_id = message_ids{i};
+        cache_entry = node.message_cache(msg_id);
+        
+        % Check if this message is from the attacking sender
+        if cache_entry.message.source_id == sender_id
+            % Remove from cache
+            remove(node.message_cache, msg_id);
+            num_purged = num_purged + 1;
+            fprintf('   └─ Purged cached message %s from attacker Node %d\n', msg_id, sender_id);
+        end
+    end
+    
+    % Add sender to blacklist with current timestamp
+    if isfield(node, 'blacklisted_senders')
+        node.blacklisted_senders(sender_id) = current_time;
+        fprintf('   └─ Blacklisted Node %d for 60 seconds\n', sender_id);
+    end
+end
+
 function node = cleanupMessageCache(node, current_time)
     message_ids = keys(node.message_cache);
     
@@ -4251,6 +4428,17 @@ function has_message = nodeHasMessage(node, message_id)
 end
 
 function node = forwardCachedMessages(node, current_time)
+    % CRITICAL: BLACK_HOLE nodes should NEVER forward cached messages
+    % They drop everything - no forwarding allowed
+    is_blackhole = node.is_attacker && isfield(node, 'attack_strategy') && ...
+                   ~isempty(node.attack_strategy) && strcmpi(node.attack_strategy, 'BLACK_HOLE');
+    
+    if is_blackhole
+        % BLACK_HOLE nodes drop everything - clear cache and exit
+        node.message_cache = containers.Map('KeyType', 'char', 'ValueType', 'any');
+        return;
+    end
+    
     % Check for new neighbors and forward cached messages
     message_ids = keys(node.message_cache);
     
@@ -4275,7 +4463,14 @@ function node = forwardCachedMessages(node, current_time)
                     node.message_cache(msg_id) = cache_entry;
                     
                     % Update forwarded count for forwarding behavior tracking
-                    node.forwarded_count = node.forwarded_count + 1;
+                    % CRITICAL FIX: BLACK_HOLE nodes should NOT increment forwarded_count
+                    % (they drop received messages, so low forwarding is their signature)
+                    is_blackhole = node.is_attacker && isfield(node, 'attack_strategy') && ~isempty(node.attack_strategy) && strcmpi(node.attack_strategy, 'BLACK_HOLE');
+                    if ~is_blackhole
+                        node.forwarded_count = node.forwarded_count + 1;
+                    else
+                        fprintf('[DEBUG] Blocked forwarded_count increment for BLACK_HOLE Node %d\n', node.id);
+                    end
                     
                     % Simulate forwarding (will be handled in main loop)
                 end
@@ -4443,7 +4638,7 @@ function runBluetoothMeshSimulation()
 
     % === IDS Detection Thresholds (edit here to tune) ===
     % Confidence threshold for blocking messages classified as attacks
-    detection_confidence_threshold = 1.0; % Next test value
+    detection_confidence_threshold = 0.90; % Messages with confidence < 90% will NOT be blocked
 
     % Initialize message_log as empty struct array
     message_log = struct([]);
@@ -4481,6 +4676,11 @@ function runBluetoothMeshSimulation()
         attacker = createAdvancedAttackerNode(NUM_NORMAL_NODES + i, x, y);
         attacker.ids_model = shared_ids_model;  
         nodes = [nodes, attacker];
+        
+        % Debug: Print attacker type and initial forwarding stats
+        fprintf('📍 Created ATTACKER Node %d: Type=%s, forwarded_count=%d, received_count=%d (ratio=%.2f)\n', ...
+            attacker.id, attacker.attack_strategy, attacker.forwarded_count, attacker.received_count, ...
+            attacker.forwarded_count / attacker.received_count);
     end
     
     % Initialize neighbor relationships
@@ -4608,6 +4808,15 @@ function runBluetoothMeshSimulation()
         
         for i = 1:length(attacker_indices)
             idx = attacker_indices(i);
+            
+            % For flooding attacks, we need to deliver ALL burst messages immediately
+            % Get all cached messages BEFORE the attack to identify new ones
+            if isempty(keys(nodes(idx).message_cache))
+                cached_before = {};
+            else
+                cached_before = keys(nodes(idx).message_cache);
+            end
+            
             [nodes(idx), attack_message] = launchAttack(nodes(idx), current_time, normal_node_ids);
             
             % Log attack messages if they were generated
@@ -4617,6 +4826,52 @@ function runBluetoothMeshSimulation()
                 logFeatureData(attack_message, current_time, nodes(idx), nodes(idx));
                 fprintf('ATTACK: Node %d launched %s attack with message %s\n', ...
                     nodes(idx).id, nodes(idx).attack_strategy, attack_message.id);
+            end
+            
+            % IMMEDIATE DELIVERY: For flooding/burst attacks, deliver all new messages immediately
+            % Get all cached messages AFTER the attack
+            if ~isempty(keys(nodes(idx).message_cache))
+                cached_after = keys(nodes(idx).message_cache);
+                % Find new messages that were just added
+                new_messages = setdiff(cached_after, cached_before);
+                
+                % Immediately deliver each new message to its destination
+                for j = 1:length(new_messages)
+                    msg_id = new_messages{j};
+                    cache_entry = nodes(idx).message_cache(msg_id);
+                    msg = cache_entry.message;
+                    
+                    % Find the destination node
+                    dest_idx = find([nodes.id] == msg.destination_id, 1);
+                    if ~isempty(dest_idx) && nodes(dest_idx).is_active
+                        % Check if they are neighbors (within transmission range)
+                        distance = norm(nodes(idx).position - nodes(dest_idx).position);
+                        if distance <= TRANSMISSION_RANGE
+                            % Immediate delivery with 90% success rate
+                            if rand() < 0.9
+                                [nodes(dest_idx), detection_result] = receiveMessage(nodes(dest_idx), msg, msg.timestamp, nodes(idx), detection_confidence_threshold);
+                                
+                                % Update forwarding stats for the sender
+                                % CRITICAL FIX: BLACK_HOLE nodes should NOT increment forwarded_count
+                                % (they drop received messages, so low forwarding is their signature)
+                                is_blackhole = nodes(idx).is_attacker && isfield(nodes(idx), 'attack_strategy') && ~isempty(nodes(idx).attack_strategy) && strcmpi(nodes(idx).attack_strategy, 'BLACK_HOLE');
+                                if ~is_blackhole
+                                    if isfield(nodes(idx), 'forwarded_count')
+                                        nodes(idx).forwarded_count = nodes(idx).forwarded_count + 1;
+                                    else
+                                        nodes(idx).forwarded_count = 1;
+                                    end
+                                else
+                                    fprintf('[DEBUG] Blocked forwarded_count increment for BLACK_HOLE Node %d (location 1)\n', nodes(idx).id);
+                                end
+                                
+                                % Mark as forwarded to this neighbor
+                                cache_entry.forwarded_to(end+1) = msg.destination_id;
+                                nodes(idx).message_cache(msg_id) = cache_entry;
+                            end
+                        end
+                    end
+                end
             end
         end
         
@@ -4673,10 +4928,17 @@ function runBluetoothMeshSimulation()
                                                 [nodes(neighbor_idx), detection_result] = receiveMessage(nodes(neighbor_idx), forwarded_msg, current_time, nodes(i), detection_confidence_threshold);
                                                 
                                                 % Increment forwarded count for the forwarding node
-                                                if isfield(nodes(i), 'forwarded_count')
-                                                    nodes(i).forwarded_count = nodes(i).forwarded_count + 1;
+                                                % CRITICAL FIX: BLACK_HOLE nodes should NOT increment forwarded_count
+                                                % (they drop received messages, so low forwarding is their signature)
+                                                is_blackhole = nodes(i).is_attacker && isfield(nodes(i), 'attack_strategy') && ~isempty(nodes(i).attack_strategy) && strcmpi(nodes(i).attack_strategy, 'BLACK_HOLE');
+                                                if ~is_blackhole
+                                                    if isfield(nodes(i), 'forwarded_count')
+                                                        nodes(i).forwarded_count = nodes(i).forwarded_count + 1;
+                                                    else
+                                                        nodes(i).forwarded_count = 1;
+                                                    end
                                                 else
-                                                    nodes(i).forwarded_count = 1;
+                                                    fprintf('[DEBUG] Blocked forwarded_count increment for BLACK_HOLE Node %d (location 2)\n', nodes(i).id);
                                                 end
                                                 
                                                 % Update feature log for this forwarding node to reflect current forwarding behavior
@@ -4761,7 +5023,24 @@ function runBluetoothMeshSimulation()
     fprintf('\nExporting feature dataset...\n');
     exportFeatureDataset();
 
-    fprintf('\n--- Forwarding Behavior for Normal Nodes ---\n');
+    fprintf('\n--- Forwarding Behavior for ATTACKER Nodes ---\n');
+    if exist('nodes', 'var') && ~isempty(nodes)
+        for i = 1:length(nodes)
+            node = nodes(i);
+            if isfield(node, 'is_attacker') && node.is_attacker
+                fc = 0; rc = 0;
+                if isfield(node, 'forwarded_count'), fc = node.forwarded_count; end
+                if isfield(node, 'received_count'), rc = node.received_count; end
+                ratio = 0;
+                if rc > 0, ratio = fc / rc; end
+                attack_type = 'UNKNOWN';
+                if isfield(node, 'attack_strategy'), attack_type = node.attack_strategy; end
+                fprintf('Node %d (%s): forwarded_count = %d, received_count = %d, forwarding_ratio = %.3f\n', ...
+                    node.id, attack_type, fc, rc, ratio);
+            end
+        end
+    end
+    fprintf('--- Forwarding Behavior for Normal Nodes ---\n');
     if exist('nodes', 'var') && ~isempty(nodes)
         for i = 1:length(nodes)
             node = nodes(i);
