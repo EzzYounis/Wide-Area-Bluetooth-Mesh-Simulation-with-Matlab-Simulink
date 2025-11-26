@@ -8,7 +8,7 @@ clear all; close all; clc;
 
 %% Simulation Parameters
 global NUM_NORMAL_NODES NUM_ATTACK_NODES TOTAL_NODES MESSAGE_INTERVAL SIMULATION_TIME TRANSMISSION_RANGE AREA_SIZE next_node_id;
-NUM_NORMAL_NODES = 20;
+NUM_NORMAL_NODES = 2;
 NUM_ATTACK_NODES = 1;
 TOTAL_NODES = NUM_NORMAL_NODES + NUM_ATTACK_NODES;
 MESSAGE_INTERVAL = 60; % seconds - INCREASED to 30 to reduce message load
@@ -3868,33 +3868,35 @@ function visualizeNetwork(nodes, current_time)
     clf;
     hold on;
     
-    % Plot normal nodes
+    % Plot normal nodes (only active)
     for i = 1:length(nodes)
-        if ~nodes(i).is_attacker
+        if ~nodes(i).is_attacker && nodes(i).is_active
             scatter(nodes(i).position(1), nodes(i).position(2), 100, 'b', 'filled');
             text(nodes(i).position(1)+5, nodes(i).position(2)+5, sprintf('N%d', nodes(i).id), ...
                 'FontSize', 8, 'Color', 'blue');
         end
     end
     
-    % Plot attacker nodes
+    % Plot attacker nodes (only active)
     for i = 1:length(nodes)
-        if nodes(i).is_attacker
+        if nodes(i).is_attacker && nodes(i).is_active
             scatter(nodes(i).position(1), nodes(i).position(2), 120, 'r', 'filled', 's');
             text(nodes(i).position(1)+5, nodes(i).position(2)+5, sprintf('A%d', nodes(i).id), ...
                 'FontSize', 8, 'Color', 'red', 'FontWeight', 'bold');
         end
     end
     
-    % Draw connections
+    % Draw connections (only for active nodes)
     for i = 1:length(nodes)
-        for j = 1:length(nodes(i).neighbors)
-            neighbor_id = nodes(i).neighbors(j);
-            neighbor_idx = find([nodes.id] == neighbor_id);
-            if ~isempty(neighbor_idx)
-                plot([nodes(i).position(1), nodes(neighbor_idx).position(1)], ...
-                     [nodes(i).position(2), nodes(neighbor_idx).position(2)], ...
-                     'k--', 'LineWidth', 0.5, 'Color', [0.7 0.7 0.7]);
+        if nodes(i).is_active
+            for j = 1:length(nodes(i).neighbors)
+                neighbor_id = nodes(i).neighbors(j);
+                neighbor_idx = find([nodes.id] == neighbor_id);
+                if ~isempty(neighbor_idx) && nodes(neighbor_idx).is_active
+                    plot([nodes(i).position(1), nodes(neighbor_idx).position(1)], ...
+                         [nodes(i).position(2), nodes(neighbor_idx).position(2)], ...
+                         'k--', 'LineWidth', 0.5, 'Color', [0.7 0.7 0.7]);
+                end
             end
         end
     end
@@ -5020,9 +5022,9 @@ function runBluetoothMeshSimulation()
     % Mobility variables
     next_mobility_time = randi([30,90]); % First random mobility event in 30-90 seconds
     % Dynamic node management variables
-    next_node_removal_time = randi([15, 30]); % First attacker removal in 15-30 seconds
+    % next_node_removal_time = randi([15, 30]); % DISABLED: Standalone attacker removal
     next_normal_removal_time = randi([30, 60]); % First normal node removal in 30-60 seconds
-    next_node_addition_time = randi([25, 45]); % First node addition in 25-45 seconds
+    next_node_addition_time = randi([25, 45]); % First node addition (with attacker replacement) in 25-45 seconds
 
     fprintf('Starting simulation...\n');
     fprintf('⚠️  WARNING: Feature extraction has been CORRECTED (features 15-43 reordered)\n');
@@ -5033,42 +5035,42 @@ function runBluetoothMeshSimulation()
     while current_time < SIMULATION_TIME
         simulation_data.current_time = current_time;
 
-        % Random attacker node removal event (simulate device turning off)
-        if current_time >= next_node_removal_time
-            % Find removable attackers
-            removable_attackers = find([nodes.is_active] & [nodes.is_attacker]);
+        % DISABLED: Standalone attacker removal - attackers only removed during replacement events
+        % if current_time >= next_node_removal_time
+        %     % Find removable attackers
+        %     removable_attackers = find([nodes.is_active] & [nodes.is_attacker]);
             
-            % Remove one attacker if available
-            if ~isempty(removable_attackers)
-                remove_idx = removable_attackers(randi(length(removable_attackers)));
-                removed_node = nodes(remove_idx);
-                nodes(remove_idx).is_active = false;
-                
-                attack_type = 'UNKNOWN';
-                if isfield(removed_node, 'attack_strategy') && ~isempty(removed_node.attack_strategy)
-                    attack_type = removed_node.attack_strategy;
-                end
-                
-                fprintf('\n NODE REMOVED: Node %d (%s) left the network at time %.1f\n', ...
-                    removed_node.id, attack_type, current_time);
-                fprintf('   Active nodes remaining: %d (Attackers: %d, Normal: %d)\n\n', ...
-                    sum([nodes.is_active]), ...
-                    sum([nodes.is_active] & [nodes.is_attacker]), ...
-                    sum([nodes.is_active] & ~[nodes.is_attacker]));
-                
-                % Update neighbors for all remaining nodes
-                for j = 1:length(nodes)
-                    if nodes(j).is_active
-                        nodes(j) = updateNeighbors(nodes(j), nodes, TRANSMISSION_RANGE);
-                    end
-                end
-            else
-                fprintf('\n⚠️  No active attacker nodes available for removal\n');
-            end
+        %     % Remove one attacker if available
+        %     if ~isempty(removable_attackers)
+        %         remove_idx = removable_attackers(randi(length(removable_attackers)));
+        %         removed_node = nodes(remove_idx);
+        %         nodes(remove_idx).is_active = false;
+        %         
+        %         attack_type = 'UNKNOWN';
+        %         if isfield(removed_node, 'attack_strategy') && ~isempty(removed_node.attack_strategy)
+        %             attack_type = removed_node.attack_strategy;
+        %         end
+        %         
+        %         fprintf('\n NODE REMOVED: Node %d (%s) left the network at time %.1f\n', ...
+        %             removed_node.id, attack_type, current_time);
+        %         fprintf('   Active nodes remaining: %d (Attackers: %d, Normal: %d)\n\n', ...
+        %             sum([nodes.is_active]), ...
+        %             sum([nodes.is_active] & [nodes.is_attacker]), ...
+        %             sum([nodes.is_active] & ~[nodes.is_attacker]));
+        %         
+        %         % Update neighbors for all remaining nodes
+        %         for j = 1:length(nodes)
+        %             if nodes(j).is_active
+        %                 nodes(j) = updateNeighbors(nodes(j), nodes, TRANSMISSION_RANGE);
+        %             end
+        %         end
+        %     else
+        %         fprintf('\n⚠️  No active attacker nodes available for removal\n');
+        %     end
             
-            % Schedule next attacker removal event (15-30 seconds)
-            next_node_removal_time = current_time + randi([15, 30]);
-        end
+        %     % Schedule next attacker removal event (15-30 seconds)
+        %     next_node_removal_time = current_time + randi([15, 30]);
+        % end
         
         % Random normal node removal event
         if current_time >= next_normal_removal_time
@@ -5106,8 +5108,24 @@ function runBluetoothMeshSimulation()
         if current_time >= next_node_addition_time
             global next_node_id;
             
-            fprintf('\n NEW NODES JOINING at time %.1f:\n', current_time);
+            fprintf('\n NODE REPLACEMENT EVENT at time %.1f:\n', current_time);
             added_count = 0;
+            
+            % First, remove one attacker to maintain balance
+            removable_attackers = find([nodes.is_active] & [nodes.is_attacker]);
+            if ~isempty(removable_attackers)
+                remove_idx = removable_attackers(randi(length(removable_attackers)));
+                removed_node = nodes(remove_idx);
+                nodes(remove_idx).is_active = false;
+                
+                attack_type = 'UNKNOWN';
+                if isfield(removed_node, 'attack_strategy') && ~isempty(removed_node.attack_strategy)
+                    attack_type = removed_node.attack_strategy;
+                end
+                
+                fprintf('   ✗ Attacker Node %d (%s) left at [%.1f, %.1f]\n', ...
+                    removed_node.id, attack_type, removed_node.position(1), removed_node.position(2));
+            end
             
             % Add one attacker node
             x = AREA_SIZE * rand();
