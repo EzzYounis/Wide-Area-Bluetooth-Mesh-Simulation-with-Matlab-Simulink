@@ -30,23 +30,32 @@ end
 %% Find and Load Training Data
 fprintf('1. Loading training data...\n');
 
+% First try to load the new balanced dataset (200k samples)
+balanced_200k_file = fullfile(TRAINING_DATA_DIR, 'balanced_feature_dataset.csv');
 
-% Get list of available datasets
-balanced_pattern = fullfile(TRAINING_DATA_DIR, 'balanced_feature_dataset_*_cleaned.csv');
-balanced_files = dir(balanced_pattern);
-
-if USE_ALL_DATA
-    % Also load non-balanced datasets
-    unbalanced_pattern = fullfile(TRAINING_DATA_DIR, 'feature_dataset_*.csv');
-    all_feature_files = dir(unbalanced_pattern);
-    % Filter out balanced ones (avoid duplicates)
-    unbalanced_files = all_feature_files(~contains({all_feature_files.name}, 'balanced'));
-    files = [balanced_files; unbalanced_files];
-    fprintf('   Found %d balanced + %d unbalanced dataset files\n', length(balanced_files), length(unbalanced_files));
+if exist(balanced_200k_file, 'file')
+    fprintf('   Found balanced dataset (200k samples): %s\n', balanced_200k_file);
+    files = dir(balanced_200k_file);
+    fprintf('   Using the 200k balanced dataset only.\n');
 else
-    files = balanced_files;
-    fprintf('   Found %d balanced dataset files\n', length(balanced_files));
-    fprintf('   Using only balanced datasets.\n');
+    % Fallback to old method
+    % Get list of available datasets
+    balanced_pattern = fullfile(TRAINING_DATA_DIR, 'balanced_feature_dataset_*_cleaned.csv');
+    balanced_files = dir(balanced_pattern);
+
+    if USE_ALL_DATA
+        % Also load non-balanced datasets
+        unbalanced_pattern = fullfile(TRAINING_DATA_DIR, 'feature_dataset_*.csv');
+        all_feature_files = dir(unbalanced_pattern);
+        % Filter out balanced ones (avoid duplicates)
+        unbalanced_files = all_feature_files(~contains({all_feature_files.name}, 'balanced'));
+        files = [balanced_files; unbalanced_files];
+        fprintf('   Found %d balanced + %d unbalanced dataset files\n', length(balanced_files), length(unbalanced_files));
+    else
+        files = balanced_files;
+        fprintf('   Found %d balanced dataset files\n', length(balanced_files));
+        fprintf('   Using only balanced datasets.\n');
+    end
 end
 
 if isempty(files)
@@ -337,14 +346,15 @@ params.timestamp = timestamp;
 params.num_source_files = length(files);
 params.source_files = {files.name}; % List of all source files used
 
-if USE_ALL_DATA
-    params.data_type = 'combined (balanced + unbalanced)';
-    params.num_balanced_files = length(balanced_files);
-    params.num_unbalanced_files = length(unbalanced_files);
-else
-    params.data_type = 'balanced only';
-    params.num_balanced_files = length(balanced_files);
+% Check if we used the 200k balanced dataset
+if exist(balanced_200k_file, 'file') && length(files) == 1 && strcmp(files(1).name, 'balanced_feature_dataset.csv')
+    params.data_type = 'balanced 200k dataset';
+    params.num_balanced_files = 1;
     params.num_unbalanced_files = 0;
+else
+    params.data_type = 'legacy datasets';
+    params.num_balanced_files = 0;
+    params.num_unbalanced_files = length(files);
 end
 
 params_file = fullfile(MODELS_DIR, sprintf('matlab_params_%s.json', timestamp));
@@ -439,9 +449,8 @@ fprintf('  - Validation Samples: %d\n', length(y_val));
 fprintf('  - Validation Accuracy: %.2f%%\n', accuracy * 100);
 fprintf('  - OOB Error: %.4f\n', oob_error);
 fprintf('  - Training Time: %.2f seconds\n', training_time);
-fprintf('  - Data Type: combined (balanced + unbalanced)\n');
+fprintf('  - Data Type: %s\n', params.data_type);
 fprintf('\nSource Files Used:\n');
-fprintf('  Balanced datasets: %d files\n', length(balanced_files));
 for i = 1:min(5, length(files))
     fprintf('  - %s\n', files(i).name);
 end

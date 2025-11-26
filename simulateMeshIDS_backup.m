@@ -49,13 +49,14 @@ function node = createAttackerNode(id, x, y)
     node.is_active = true;
     
     % Attacker-specific properties
-    strategies = {'FLOODING', 'ADAPTIVE_FLOODING', 'RESOURCE_EXHAUSTION', 'BLACK_HOLE', 'SPOOFING'};
+    %strategies = {'FLOODING'};
+    strategies = {'FLOODING'};
     node.attack_strategy = strategies{randi(length(strategies))};
     node.attack_frequency = 15 + 10 * rand(); % INCREASED: 15-25 seconds between attacks
     node.last_attack_time = 0;
     node.target_nodes = [];
     node.message_cache = containers.Map();
-    node.cache_duration = 10;  % Reduced from 20 to prevent cache buildup
+    node.cache_duration = 20;
     node.buffer_ttl = 300; % More aggressive: Messages expire from buffer after 300 seconds
     node.attack_params = struct(); % Will be populated by advanced attacker function
     node.blacklisted_senders = containers.Map('KeyType', 'double', 'ValueType', 'double');
@@ -112,7 +113,7 @@ function node = createNormalNode(id, x, y)
     node.total_distance_moved = 0; % Track cumulative movement
     node.target_nodes = [];
     node.message_cache = containers.Map();
-    node.cache_duration = 10;  % Reduced from 20 to prevent cache buildup
+    node.cache_duration = 20;
     node.buffer_ttl = 10; % More aggressive: Messages expire from buffer after 10 seconds
     node.attack_params = struct(); % Empty struct for normal nodes
     node.blacklisted_senders = containers.Map('KeyType', 'double', 'ValueType', 'double');
@@ -139,7 +140,7 @@ function node = createAdvancedAttackerNode(id, x, y)
     % IMPORTANT FORWARDING BEHAVIOR:
     % - BLACK_HOLE: Drops all received messages (handled in receiveMessage), low forwarding_count
     % - FLOODING, ADAPTIVE_FLOODING, RESOURCE_EXHAUSTION, SPOOFING: Forward messages normally like regular nodes
-    advanced_strategies = {'FLOODING', 'ADAPTIVE_FLOODING', 'RESOURCE_EXHAUSTION', 'BLACK_HOLE', 'SPOOFING'};
+    advanced_strategies = {'FLOODING'};
     node.attack_strategy = advanced_strategies{randi(length(advanced_strategies))};
     node.attack_params = struct();
     % Strategy-specific parameters
@@ -4671,7 +4672,6 @@ end
 function node = cleanupMessageCache(node, current_time)
     message_ids = keys(node.message_cache);
     
-    % First pass: Remove expired messages
     for i = 1:length(message_ids)
         msg_id = message_ids{i};
         cache_entry = node.message_cache(msg_id);
@@ -4679,25 +4679,6 @@ function node = cleanupMessageCache(node, current_time)
         if current_time - cache_entry.cache_time > node.cache_duration
             remove(node.message_cache, msg_id);
         end
-    end
-    
-    % Second pass: Enforce maximum cache size (prevent memory overflow)
-    MAX_CACHE_SIZE = 100;  % Maximum messages in cache
-    remaining_ids = keys(node.message_cache);
-    if length(remaining_ids) > MAX_CACHE_SIZE
-        % Remove oldest messages first
-        cache_times = zeros(1, length(remaining_ids));
-        for i = 1:length(remaining_ids)
-            cache_times(i) = node.message_cache(remaining_ids{i}).cache_time;
-        end
-        [~, sorted_idx] = sort(cache_times);
-        % Remove oldest messages beyond the limit
-        num_to_remove = length(remaining_ids) - MAX_CACHE_SIZE;
-        for i = 1:num_to_remove
-            remove(node.message_cache, remaining_ids{sorted_idx(i)});
-        end
-        fprintf('[CACHE LIMIT] Node %d: Removed %d old messages (cache was %d)\n', ...
-            node.id, num_to_remove, length(remaining_ids));
     end
 end
 
@@ -5131,6 +5112,15 @@ function runBluetoothMeshSimulation()
             next_node_id = next_node_id + 1;
             added_count = added_count + 1;
 
+                fprintf('\n NEW ATTACKER JOINED: Node %d (%s) joined the network at time %.1f\n', ...
+            %         new_node.id, new_node.attack_strategy, current_time);
+            % else
+            %     new_node = createNormalNode(next_node_id, x, y);
+            %     new_node.ids_model = shared_ids_model;
+                fprintf('\n NEW NODE JOINED: Node %d (NORMAL) joined the network at time %.1f\n', ...
+            %         new_node.id, current_time);
+            % end
+            
 
             
 
@@ -5240,6 +5230,9 @@ function runBluetoothMeshSimulation()
                             fprintf('Network message: Node %d sent heartbeat %s\n', nodes(sender_idx).id, message.id);
                         end
                     end
+                    
+                    % Small delay between messages in the same interval
+                    pause(0.1);
                 end
             end
             
@@ -5279,18 +5272,15 @@ function runBluetoothMeshSimulation()
                 % Find new messages that were just added
                 new_messages = setdiff(cached_after, cached_before);
                 
-                % OPTIMIZATION: Limit immediate deliveries to prevent freezing
-                max_immediate_deliveries = min(10, length(new_messages));
-                
                 % Immediately deliver each new message to its destination
-                for j = 1:max_immediate_deliveries
+                for j = 1:length(new_messages)
                     msg_id = new_messages{j};
                     cache_entry = nodes(idx).message_cache(msg_id);
                     msg = cache_entry.message;
                     
-                    % Find the destination node and verify sender is still active
+                    % Find the destination node
                     dest_idx = find([nodes.id] == msg.destination_id, 1);
-                    if ~isempty(dest_idx) && nodes(dest_idx).is_active && nodes(idx).is_active
+                    if ~isempty(dest_idx) && nodes(dest_idx).is_active
                         % Check if they are neighbors (within transmission range)
                         distance = norm(nodes(idx).position - nodes(dest_idx).position);
                         if distance <= TRANSMISSION_RANGE
@@ -5300,6 +5290,7 @@ function runBluetoothMeshSimulation()
                                 
                                 % Update forwarding stats for the sender
                                 % CRITICAL FIX: BLACK_HOLE nodes should NOT increment forwarded_count
+                                % (they drop received messages, so low forwarding is their signature)
                                 is_blackhole = nodes(idx).is_attacker && isfield(nodes(idx), 'attack_strategy') && ~isempty(nodes(idx).attack_strategy) && strcmpi(nodes(idx).attack_strategy, 'BLACK_HOLE');
                                 if ~is_blackhole
                                     if isfield(nodes(idx), 'forwarded_count')
@@ -5307,6 +5298,8 @@ function runBluetoothMeshSimulation()
                                     else
                                         nodes(idx).forwarded_count = 1;
                                     end
+                                else
+                                    fprintf('[DEBUG] Blocked forwarded_count increment for BLACK_HOLE Node %d (location 1)\n', nodes(idx).id);
                                 end
                                 
                                 % Mark as forwarded to this neighbor
@@ -5316,16 +5309,11 @@ function runBluetoothMeshSimulation()
                         end
                     end
                 end
-                
-                if length(new_messages) > max_immediate_deliveries
-                    fprintf('[OPTIMIZATION] Limited immediate flooding deliveries to %d (had %d messages)\n', ...
-                        max_immediate_deliveries, length(new_messages));
-                end
             end
         end
         
         % Enhanced message propagation with caching and duplicate detection
-        if mod(current_time, 0.5) == 0  % Check every 0.5 seconds for aggressive cleanup
+        if mod(current_time, 1) == 0  % Check every 1 second for more frequent cleanup
             
             % Clean up expired messages from all nodes (both cache and buffer)
             for i = 1:length(nodes)
@@ -5336,25 +5324,12 @@ function runBluetoothMeshSimulation()
             end
             
             % Forward cached messages to new/missed neighbors
-            % OPTIMIZATION: Limit forwarding operations per time step to prevent freezing
-            MAX_FORWARDS_PER_TIMESTEP = 50;
-            total_forwards = 0;
-            
             for i = 1:length(nodes)
-                if total_forwards >= MAX_FORWARDS_PER_TIMESTEP
-                    break; % Exit early if we've hit the forwarding limit
-                end
-                
                 if nodes(i).is_active && ~isempty(keys(nodes(i).message_cache))
-                    % Check each cached message (limit to first 5 messages per node)
+                    % Check each cached message
                     message_ids = keys(nodes(i).message_cache);
-                    max_msgs_to_process = min(5, length(message_ids));
                     
-                    for j = 1:max_msgs_to_process
-                        if total_forwards >= MAX_FORWARDS_PER_TIMESTEP
-                            break;
-                        end
-                        
+                    for j = 1:length(message_ids)
                         msg_id = message_ids{j};
                         cache_entry = nodes(i).message_cache(msg_id);
                         
@@ -5363,15 +5338,8 @@ function runBluetoothMeshSimulation()
                             continue;
                         end
                         
-                        % Forward to neighbors who don't have it yet (limit to first 3 neighbors)
-                        max_neighbors_to_forward = min(3, length(nodes(i).neighbors));
-                        forwards_this_msg = 0;
-                        
+                        % Forward to neighbors who don't have it yet
                         for k = 1:length(nodes(i).neighbors)
-                            if forwards_this_msg >= max_neighbors_to_forward || total_forwards >= MAX_FORWARDS_PER_TIMESTEP
-                                break;
-                            end
-                            
                             neighbor_id = nodes(i).neighbors(k);
                             neighbor_idx = find([nodes.id] == neighbor_id);
                             
@@ -5388,17 +5356,17 @@ function runBluetoothMeshSimulation()
                                             % Check TTL and maximum hop count limits
                                             MAX_HOP_COUNT = 10; % Maximum allowed hops in mesh network
                                             if forwarded_msg.ttl <= 0 || forwarded_msg.hop_count > MAX_HOP_COUNT
+                                                %fprintf('Message %s dropped: TTL=%d, hops=%d (max_hops=%d)\n', ...
+                                                %    msg_id, forwarded_msg.ttl, forwarded_msg.hop_count, MAX_HOP_COUNT);
                                                 continue; % Skip forwarding this message
                                             end
             
-                                            % Verify both sender and message source are still active
-                                            source_idx = find([nodes.id] == forwarded_msg.source_id, 1);
-                                            if neighbor_id ~= forwarded_msg.source_id && ...
-                                               (~isempty(source_idx) && nodes(source_idx).is_active || isempty(source_idx))
+                                            if neighbor_id ~= forwarded_msg.source_id
                                                 [nodes(neighbor_idx), detection_result] = receiveMessage(nodes(neighbor_idx), forwarded_msg, current_time, nodes(i), detection_confidence_threshold);
                                                 
                                                 % Increment forwarded count for the forwarding node
                                                 % CRITICAL FIX: BLACK_HOLE nodes should NOT increment forwarded_count
+                                                % (they drop received messages, so low forwarding is their signature)
                                                 is_blackhole = nodes(i).is_attacker && isfield(nodes(i), 'attack_strategy') && ~isempty(nodes(i).attack_strategy) && strcmpi(nodes(i).attack_strategy, 'BLACK_HOLE');
                                                 if ~is_blackhole
                                                     if isfield(nodes(i), 'forwarded_count')
@@ -5406,6 +5374,8 @@ function runBluetoothMeshSimulation()
                                                     else
                                                         nodes(i).forwarded_count = 1;
                                                     end
+                                                else
+                                                    fprintf('[DEBUG] Blocked forwarded_count increment for BLACK_HOLE Node %d (location 2)\n', nodes(i).id);
                                                 end
                                                 
                                                 % Update feature log for this forwarding node to reflect current forwarding behavior
@@ -5418,9 +5388,11 @@ function runBluetoothMeshSimulation()
                                                 % Also log features for forwarded messages from sender perspective
                                                 logFeatureData(forwarded_msg, current_time, nodes(i), []);
                                                 
-                                                % Increment counters
-                                                total_forwards = total_forwards + 1;
-                                                forwards_this_msg = forwards_this_msg + 1;
+                                                fprintf('Node %d forwarded cached message %s to Node %d (forwarded_count: %d)\n', ...
+                                                    nodes(i).id, msg_id, neighbor_id, nodes(i).forwarded_count);
+                                            else
+                                                fprintf('Prevented forwarding message %s back to source Node %d\n', ...
+                                                    msg_id, neighbor_id);
                                             end
                                         end
                                     end
@@ -5430,26 +5402,6 @@ function runBluetoothMeshSimulation()
                     end
                 end
             end
-            
-            % Report if we hit the limit (for debugging)
-            if total_forwards >= MAX_FORWARDS_PER_TIMESTEP
-                fprintf('[OPTIMIZATION] Hit forwarding limit: %d forwards this timestep at time %.1f\n', total_forwards, current_time);
-            end
-        end
-        
-        % DEBUG: Show progress every few seconds
-        if mod(current_time, 5) == 0
-            active_count = sum([nodes.is_active]);
-            cache_sizes = zeros(1, length(nodes));
-            for idx = 1:length(nodes)
-                if nodes(idx).is_active
-                    cache_sizes(idx) = length(keys(nodes(idx).message_cache));
-                end
-            end
-            total_cached = sum(cache_sizes);
-            max_cache = max(cache_sizes);
-            fprintf('[DEBUG] Time %.1f: Active nodes=%d, Total cached msgs=%d, Max cache=%d\n', ...
-                current_time, active_count, total_cached, max_cache);
         end
                 
         % Update statistics every 30 seconds
@@ -5499,7 +5451,7 @@ function runBluetoothMeshSimulation()
         
         % Time progression
         current_time = current_time + 1;
-        drawnow; % Update visualizations without blocking
+        pause(0.01); % Small delay for visualization
     end
     
     fprintf('\nExporting training dataset...\n');
