@@ -5,8 +5,8 @@ clear; clc;
 
 % Configuration
 TARGET_TOTAL = 200000;
-INPUT_FILE = 'training_data/merged_shuffled_feature_dataset.csv';
-OUTPUT_FILE = 'training_data/balanced_feature_dataset.csv';
+INPUT_FILE = 'training_data/balanced12_feature_dataset.csv';
+OUTPUT_FILE = 'training_data/balanced12_feature_dataset.csv';
 
 fprintf('=== Balanced Dataset Generator ===\n\n');
 
@@ -59,22 +59,43 @@ for i = 1:length(allNames)
 end
 fprintf('Using %d numeric features for generation\n', length(featureNames));
 
-fprintf('\n=== Starting Data Generation ===\n');
-generatedData = table();
+fprintf('\n=== Starting Data Balancing ===\n');
+balancedDataByClass = table();
 
 for i = 1:height(generationPlan)
     attackType = generationPlan.AttackType{i};
+    currentCount = generationPlan.Current(i);
     toGenerate = generationPlan.ToGenerate(i);
-    
-    if toGenerate <= 0
-        fprintf('%s: No generation needed\n', attackType);
-        continue;
-    end
-    
-    fprintf('\nGenerating %d samples for %s...\n', toGenerate, attackType);
     
     % Get existing samples for this attack type
     classData = existingData(strcmp(existingData.attack_type, attackType), :);
+    
+    % Case 1: Need to downsample (too many samples)
+    if toGenerate < 0
+        fprintf('%s: Downsampling from %d to %d (removing %d samples)\n', ...
+            attackType, currentCount, targetPerClass, -toGenerate);
+        
+        % Randomly select targetPerClass samples
+        rng(42 + i); % For reproducibility
+        selectedIdx = randperm(height(classData), targetPerClass);
+        sampledData = classData(selectedIdx, :);
+        balancedDataByClass = [balancedDataByClass; sampledData];
+        continue;
+    end
+    
+    % Case 2: Already at target
+    if toGenerate == 0
+        fprintf('%s: Already balanced at %d samples\n', attackType, targetPerClass);
+        balancedDataByClass = [balancedDataByClass; classData];
+        continue;
+    end
+    
+    % Case 3: Need to generate more samples (upsample)
+    fprintf('%s: Upsampling from %d to %d (generating %d samples)\n', ...
+        attackType, currentCount, targetPerClass, toGenerate);
+    
+    % Add all existing samples first
+    balancedDataByClass = [balancedDataByClass; classData];
     
     if height(classData) < 10
         warning('Very few samples for %s. Generation may not be accurate.', attackType);
@@ -190,17 +211,15 @@ for i = 1:height(generationPlan)
         newSamples = [newSamples; newRow];
     end
     
-    generatedData = [generatedData; newSamples];
+    % Add generated samples to the balanced dataset
+    balancedDataByClass = [balancedDataByClass; newSamples];
     fprintf('Generated %d samples for %s\n', height(newSamples), attackType);
 end
 
-% Combine existing and generated data
-fprintf('\n=== Combining Data ===\n');
-balancedData = [existingData; generatedData];
-
-fprintf('Original data: %d samples\n', height(existingData));
-fprintf('Generated data: %d samples\n', height(generatedData));
-fprintf('Combined data: %d samples\n', height(balancedData));
+% All classes should now be balanced
+fprintf('\n=== Finalizing Balanced Dataset ===\n');
+balancedData = balancedDataByClass;
+fprintf('Total balanced samples: %d\n', height(balancedData));
 
 % Shuffle the combined dataset
 fprintf('\nShuffling combined dataset...\n');

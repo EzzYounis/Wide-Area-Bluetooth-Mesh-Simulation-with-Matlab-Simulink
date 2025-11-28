@@ -16,17 +16,11 @@ if exist('training_data/merged_shuffled_feature_dataset.csv', 'file')
     fprintf('Deleted old merged_shuffled_feature_dataset.csv\n');
 end
 
-% Batch process all balanced feature files
-balanced_files = dir('training_data/balanced_feature_dataset_*.csv');
-fprintf('\nProcessing %d balanced feature datasets...\n', length(balanced_files));
 
-% Batch process all non-balanced feature files
-feature_files = dir('training_data/feature_dataset_*.csv');
-feature_files = feature_files(~contains({feature_files.name}, 'balanced')); % Exclude balanced ones
-fprintf('Processing %d non-balanced feature datasets...\n', length(feature_files));
+
 
 % Combine both file lists
-files = [balanced_files; feature_files];
+files = dir('training_data/balanced12_feature_dataset.csv');
 fprintf('\nTotal files to process: %d\n\n', length(files));
 
 for k = 1:length(files)
@@ -417,9 +411,64 @@ shuffled_data = merged_data(shuffled_idx, :);
 fprintf('Done\n');
 
 % Save the merged and shuffled dataset
-output_file = 'training_data/merged_shuffled_feature_dataset.csv';
-writetable(shuffled_data, output_file);
-fprintf('\nMerged and shuffled dataset saved to: %s\n', output_file);
+output_file = fullfile('training_data', 'merged_shuffled_feature_dataset1.csv');
+% Ensure directory exists
+if ~exist('training_data', 'dir')
+    mkdir('training_data');
+end
+
+% Check for invalid variable names
+var_names = shuffled_data.Properties.VariableNames;
+fprintf('Checking variable names...\n');
+for i = 1:length(var_names)
+    if ~isvarname(var_names{i})
+        fprintf('Invalid variable name found: %s\n', var_names{i});
+        new_name = matlab.lang.makeValidName(var_names{i});
+        shuffled_data.Properties.VariableNames{i} = new_name;
+        fprintf('Renamed to: %s\n', new_name);
+    end
+end
+
+% Check for and replace problematic values
+fprintf('Checking for problematic values...\n');
+numeric_vars = varfun(@isnumeric, shuffled_data, 'OutputFormat', 'uniform');
+for i = 1:width(shuffled_data)
+    if numeric_vars(i)
+        col_data = shuffled_data{:, i};
+        if any(isnan(col_data))
+            fprintf('  Found NaN in column %s, replacing with 0\n', shuffled_data.Properties.VariableNames{i});
+            shuffled_data{isnan(shuffled_data{:,i}), i} = 0;
+        end
+        if any(isinf(col_data))
+            fprintf('  Found Inf in column %s, replacing with 0\n', shuffled_data.Properties.VariableNames{i});
+            shuffled_data{isinf(shuffled_data{:,i}), i} = 0;
+        end
+    end
+end
+
+% Try saving with write mode specified
+fprintf('Attempting to save merged dataset...\n');
+try
+    % Open file for writing
+    fid = fopen(output_file, 'w');
+    if fid == -1
+        error('Cannot open file for writing');
+    end
+    fclose(fid);
+    delete(output_file);
+    
+    % Now try writetable
+    writetable(shuffled_data, output_file, 'WriteVariableNames', true, 'Delimiter', ',', 'QuoteStrings', true);
+    fprintf('\nMerged and shuffled dataset saved to: %s\n', output_file);
+catch ME
+    fprintf('Error with CSV save: %s\n', ME.message);
+    fprintf('\nWARNING: Unable to save as CSV. This may be due to OneDrive sync lock.\n');
+    fprintf('The cleaned data is in memory but could not be written to disk.\n');
+    fprintf('Try one of these solutions:\n');
+    fprintf('  1. Pause OneDrive sync and run again\n');
+    fprintf('  2. Move the MATLAB folder outside of OneDrive\n');
+    fprintf('  3. Use a local disk path instead\n');
+end
 fprintf('Total samples: %d\n', height(shuffled_data));
 
 % Display class distribution

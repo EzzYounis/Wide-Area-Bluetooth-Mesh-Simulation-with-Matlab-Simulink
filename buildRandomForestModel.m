@@ -31,32 +31,17 @@ end
 fprintf('1. Loading training data...\n');
 
 % First try to load the new balanced dataset (200k samples)
-balanced_200k_file = fullfile(TRAINING_DATA_DIR, 'balanced_feature_dataset.csv');
 
-if exist(balanced_200k_file, 'file')
-    fprintf('   Found balanced dataset (200k samples): %s\n', balanced_200k_file);
-    files = dir(balanced_200k_file);
-    fprintf('   Using the 200k balanced dataset only.\n');
-else
     % Fallback to old method
     % Get list of available datasets
-    balanced_pattern = fullfile(TRAINING_DATA_DIR, 'balanced_feature_dataset_*_cleaned.csv');
+    balanced_pattern = fullfile(TRAINING_DATA_DIR, 'balanced12_feature_dataset_cleaned.csv');
     balanced_files = dir(balanced_pattern);
 
-    if USE_ALL_DATA
-        % Also load non-balanced datasets
-        unbalanced_pattern = fullfile(TRAINING_DATA_DIR, 'feature_dataset_*.csv');
-        all_feature_files = dir(unbalanced_pattern);
-        % Filter out balanced ones (avoid duplicates)
-        unbalanced_files = all_feature_files(~contains({all_feature_files.name}, 'balanced'));
-        files = [balanced_files; unbalanced_files];
-        fprintf('   Found %d balanced + %d unbalanced dataset files\n', length(balanced_files), length(unbalanced_files));
-    else
+  
         files = balanced_files;
         fprintf('   Found %d balanced dataset files\n', length(balanced_files));
         fprintf('   Using only balanced datasets.\n');
-    end
-end
+ 
 
 if isempty(files)
     error('No training data files found in %s', TRAINING_DATA_DIR);

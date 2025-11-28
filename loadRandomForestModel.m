@@ -16,10 +16,23 @@ function ids_model = loadRandomForestModel(model_path)
 if nargin < 1 || isempty(model_path)
     % Find the most recent model file
     models_dir = 'models';
-    model_pattern = fullfile(models_dir, 'bluetooth_mesh_ids_rf_*.mat');
-    model_files = dir(model_pattern);
     
-    if isempty(model_files)
+    % First try to find binary models
+    binary_pattern = fullfile(models_dir, 'bluetooth_mesh_ids_binary_rf_*.mat');
+    binary_files = dir(binary_pattern);
+    
+    % Fallback to multi-class models if no binary models found
+    multiclass_pattern = fullfile(models_dir, 'bluetooth_mesh_ids_rf_*.mat');
+    multiclass_files = dir(multiclass_pattern);
+    
+    % Prefer binary models, but use multi-class if binary not available
+    if ~isempty(binary_files)
+        model_files = binary_files;
+        fprintf('Found %d binary model(s)\n', length(binary_files));
+    elseif ~isempty(multiclass_files)
+        model_files = multiclass_files;
+        fprintf('No binary models found, using multi-class model\n');
+    else
         error('No Random Forest model files found in %s', models_dir);
     end
     
