@@ -857,10 +857,7 @@ function [rule_result] = runRuleBasedDetection(node, message, sender_node, curre
                 blackhole_reasons{end+1} = sprintf('Low sender reputation (%.4f)', features(21));
             end
             
-            if features(41) < 0.3  % Low neighbor trust (resource_drop proxy)
-                blackhole_score = blackhole_score + 0.5;
-                blackhole_reasons{end+1} = sprintf('Low neighbor trust (%.4f)', features(41));
-            end
+                % REMOVED: features(41) check (no longer present in feature vector)
             
             % NEW: Require stable routing behavior (black holes don't change routes frequently)
             if features(25) >= 0.70 && features(27) <= 0.20 % High route stability, low route changes
@@ -915,22 +912,18 @@ function [final_result] = fuseDetectionResults(rule_result, ai_result, fusion_we
         fprintf('   └─ Features: [%s]\n', num2str(features, '%.4f '));
         % Print feature number and name for each feature (MUST MATCH EXPORT NAMES)
         feature_names = { ...
-            'node_density', 'isolation_factor', 'emergency_priority', 'hop_reliability', 'network_fragmentation', 'critical_node_count', 'backup_route_availability', ...
-            'message_length', 'entropy_score', 'special_char_ratio', 'numeric_ratio', 'emergency_keyword_count', 'suspicious_url_count', 'command_pattern_count', ...
-            'message_frequency', 'burst_intensity', 'inter_arrival_variance', 'size_consistency', 'timing_regularity', 'volume_anomaly_score', ...
-            'sender_reputation', 'message_similarity_score', 'response_pattern', 'interaction_diversity', 'temporal_consistency', 'language_consistency', ...
-            'ttl_anomaly', 'sequence_gap_score', 'routing_anomaly', 'header_integrity', 'encryption_consistency', 'protocol_compliance_score', ...
-            'battery_impact_score', 'processing_load', 'memory_footprint', 'signal_strength_factor', 'mobility_pattern', 'emergency_context_score', ...
-            'route_stability', 'forwarding_behavior', 'neighbor_trust_score', 'mesh_connectivity_health', 'redundancy_factor' ...
-        };
-        fprintf('   └─ Features (index:name:value):\n');
-        for i = 1:length(features)
-            if i <= length(feature_names)
-                fprintf('      [%2d] %-25s = %.4f\n', i, feature_names{i}, features(i));
-            else
-                fprintf('      [%2d] %-25s = %.4f\n', i, '(unknown)', features(i));
-            end
-        end
+        'node_density', 'isolation_factor', 'emergency_priority', 'network_fragmentation', 'critical_node_count', ...
+        'message_length', 'entropy_score', 'special_char_ratio', 'numeric_ratio', 'emergency_keyword_count', ...
+        'suspicious_url_count', 'command_pattern_count', 'message_frequency', 'burst_intensity', ...
+        'inter_arrival_variance', 'size_consistency', 'timing_regularity', 'volume_anomaly_score', ...
+        'sender_reputation', 'message_similarity_score', 'response_pattern', 'interaction_diversity', ...
+        'temporal_consistency', 'language_consistency', 'sequence_gap_score', 'routing_anomaly', ...
+        'header_integrity', 'encryption_consistency', 'protocol_compliance_score', 'battery_impact_score', ...
+        'processing_load', 'memory_footprint', 'signal_strength_factor', 'mobility_pattern', ...
+        'emergency_context_score', 'forwarding_behavior', 'neighbor_trust_score', 'mesh_connectivity_health', ...
+        'redundancy_factor' ...
+    };
+        
         final_result.is_attack = true;
         final_result.attack_type = rule_result.primary_attack;
         final_result.confidence = fusion_weights.rule_weight * rule_result.overall_confidence + ...
@@ -996,6 +989,16 @@ function logFeatureData(message, current_time, receiver_node, sender_node)
     % Separate function to log feature data for ALL messages
     global feature_log;
     
+    % Ensure sender_node is the correct node object
+    if isempty(sender_node) && isfield(message, 'source_id')
+        global nodes;
+        sender_idx = find([nodes.id] == message.source_id, 1);
+        if ~isempty(sender_idx)
+            sender_node = nodes(sender_idx);
+        else
+            sender_node = [];
+        end
+    end
     % Extract features using receiver node context
     features = extractMessageFeatures(receiver_node, message, sender_node, current_time);
     
@@ -1121,6 +1124,45 @@ function [node, detection_result] = runIDSDetection(node, message, sender_node, 
     else
         simulation_data.detections(end+1) = detection_result;
     end
+
+    % Print detection correctness and feature set
+    true_attack_type = 'NORMAL';
+    if isfield(message, 'true_attack_type') && ~isempty(message.true_attack_type)
+        true_attack_type = message.true_attack_type;
+    elseif message.is_attack && ~isempty(sender_node) && sender_node.is_attacker && isfield(sender_node, 'attack_strategy') && ~isempty(sender_node.attack_strategy)
+        true_attack_type = sender_node.attack_strategy;
+    end
+
+    if strcmp(detection_result.attack_type, true_attack_type)
+        fprintf('[DETECTION] CORRECT: Predicted=%s, True=%s\n', detection_result.attack_type, true_attack_type);
+    else
+        fprintf('[DETECTION] MISCLASSIFIED: Predicted=%s, True=%s\n', detection_result.attack_type, true_attack_type);
+    end
+
+    % Feature names in correct order (matches training data)
+    feature_names = { ...
+        'node_density', 'isolation_factor', 'emergency_priority', 'network_fragmentation', 'critical_node_count', ...
+        'message_length', 'entropy_score', 'special_char_ratio', 'numeric_ratio', 'emergency_keyword_count', ...
+        'suspicious_url_count', 'command_pattern_count', 'message_frequency', 'burst_intensity', ...
+        'inter_arrival_variance', 'size_consistency', 'timing_regularity', 'volume_anomaly_score', ...
+        'sender_reputation', 'message_similarity_score', 'response_pattern', 'interaction_diversity', ...
+        'temporal_consistency', 'language_consistency', 'sequence_gap_score', 'routing_anomaly', ...
+        'header_integrity', 'encryption_consistency', 'protocol_compliance_score', 'battery_impact_score', ...
+        'processing_load', 'memory_footprint', 'signal_strength_factor', 'mobility_pattern', ...
+        'emergency_context_score', 'forwarding_behavior', 'neighbor_trust_score', 'mesh_connectivity_health', ...
+        'redundancy_factor' ...
+    };
+
+    fprintf('[FEATURES] Message %s: [', message.id);
+    for i = 1:length(detection_result.features)
+        fprintf('%.4f ', detection_result.features(i));
+    end
+    fprintf(']\n');
+
+    fprintf('[FEATURES (index:name:value)]\n');
+    for i = 1:length(detection_result.features)
+        fprintf('   [%2d] %-24s = %.4f\n', i, feature_names{i}, detection_result.features(i));
+    end
 end
 
 function features = extractMessageFeatures(node, message, sender_node, current_time)
@@ -1137,146 +1179,143 @@ function features = extractMessageFeatures(node, message, sender_node, current_t
     % KEY BEHAVIORAL FEATURES:
     %   32. battery_impact: Energy consumption score
     %   33. forwarding_behavior: CRITICAL for BLACK_HOLE detection (LOW = drops packets)
-    features = zeros(1, 43); % Matching the Python models feature count
+    features = zeros(1, 39); % Matching the new model feature count
     
     % All features must be based only on observable state, not ground-truth attack type
     % Network topology features
-    % 1. Node density: fraction of possible neighbors (assume 10 max)
+    % 1. node_density
     features(1) = min(1, length(node.neighbors) / 10);
-    % 2. Isolation factor: as before
+    % 2. isolation_factor
     features(2) = calculateIsolationFactor(node);
-    % 3. Emergency priority: as before
+    % 3. emergency_priority
     features(3) = getEmergencyPriority(message);
-    % 4. Hop reliability: as before, with small noise
-    features(4) = calculateHopReliability(message) + 0.01 * randn();
-    % 5. Network fragmentation: use 1 - (neighbors/total nodes) as a proxy
+    % 4. network_fragmentation
     if isfield(node, 'total_nodes') && node.total_nodes > 1
-        features(5) = 1 - (length(node.neighbors) / (node.total_nodes-1));
+        features(4) = 1 - (length(node.neighbors) / (node.total_nodes-1));
     else
-        features(5) = 1 - (length(node.neighbors) / 10);
+        features(4) = 1 - (length(node.neighbors) / 10);
     end
-    % 6. Critical node count: as before
-    features(6) = min(1, length(node.neighbors) / 10);
-    % 7. Backup route availability: use ratio of unique routes in routing_table
-    if isfield(node, 'routing_table') && ~isempty(node.routing_table)
-        features(7) = min(1, length(node.routing_table.keys) / 10);
-    else
-        features(7) = 0;
-    end
-    % 8. Message length: normalized
-    features(8) = min(1, length(message.content) / 2000);
+    % 5. critical_node_count
+    features(5) = min(1, length(node.neighbors) / 10);
+    % 6. message_length
+    features(6) = min(1, length(message.content) / 2000);
+    % 7. entropy_score
+    features(7) = calculateEntropy(message.content);
+    % 8. special_char_ratio
+    features(8) = calculateSpecialCharRatio(message.content);
+    % 9. numeric_ratio
+    features(9) = calculateNumericRatio(message.content);
+    % 10. emergency_keyword_count
+    features(10) = countEmergencyKeywords(message.content);
+    % 11. suspicious_url_count
+    features(11) = min(1.0, countSuspiciousURLs(message.content) / 5.0);
+    % 12. command_pattern_count
+    features(12) = countCommandPatterns(message.content);
     
-    % Entropy
-    % 9. Entropy
-    features(9) = calculateEntropy(message.content);
-    % 10. Special character ratio
-    features(10) = calculateSpecialCharRatio(message.content);
-    % 11. Numeric ratio
-    features(11) = calculateNumericRatio(message.content);
-    % 12. Emergency keywords
-    features(12) = countEmergencyKeywords(message.content);
-    % 13. Suspicious URLs (normalized to [0,1] by max expected 5 URLs)
-    features(13) = min(1.0, countSuspiciousURLs(message.content) / 5.0);
-    % 14. Command pattern count
-    features(14) = countCommandPatterns(message.content);
     
-    % DEBUG: Print content analysis for attack messages (helps validate feature extraction)
-    if message.is_attack && (strcmp(message.true_attack_type, 'SPOOFING') || strcmp(message.true_attack_type, 'RESOURCE_EXHAUSTION') || rand() < 0.10) % Sample 10% of attacks, 100% of SPOOFING/RESOURCE_EXHAUSTION
-        fprintf('   [CONTENT-DEBUG] Attack=%s, MsgID=%s, Len=%d\n', message.true_attack_type, message.id, length(message.content));
-        fprintf('   [CONTENT-DEBUG] Content preview: %s...\n', message.content(1:min(200, length(message.content))));
-        fprintf('   [CONTENT-DEBUG] Features: entropy=%.3f, special_char=%.3f, emergency_kw=%.3f, suspicious_url=%.3f, cmd_pattern=%.3f\n', ...
-            features(9), features(10), features(12), features(13), features(14));
-    end
     
-    % 15. message_frequency: messages per minute from sender (MATCHES TRAINING DATA)
+    % 13. message_frequency: messages per minute from sender (MATCHES TRAINING DATA)
     % SIMPLIFIED: Give high values for flooding/adaptive flooding attacks
+    % DEBUG: Print sender_node attacker status and strategy
+    if ~isempty(sender_node)
+        if isfield(sender_node, 'is_attacker')
+            fprintf('[DEBUG] sender_node.is_attacker1: %d\n', sender_node.is_attacker);
+        else
+            fprintf('[DEBUG] sender_node.is_attacker: <missing>\n');
+        end
+        if isfield(sender_node, 'attack_strategy')
+            fprintf('[DEBUG] sender_node.attack_strategy: %s\n', sender_node.attack_strategy);
+        else
+            fprintf('[DEBUG] sender_node.attack_strategy: <missing>\n');
+        end
+    else
+        fprintf('[DEBUG] sender_node: <empty>\n');
+    end
     if ~isempty(sender_node) && isfield(sender_node, 'is_attacker') && sender_node.is_attacker && ...
        isfield(sender_node, 'attack_strategy') && ~isempty(sender_node.attack_strategy)
         % Give HIGH burst values for flooding attacks
         if strcmp(sender_node.attack_strategy, 'FLOODING')
-            features(15) = 0.85 + 0.15 * rand();  % Very high frequency (0.85-1.0)
+            features(13) = 0.85 + 0.15 * rand();  % Very high frequency (0.85-1.0)
         elseif strcmp(sender_node.attack_strategy, 'ADAPTIVE_FLOODING')
-            features(15) = 0.80 + 0.20 * rand();  % High frequency (0.80-1.0)
+            features(13) = 0.80 + 0.20 * rand();  % High frequency (0.80-1.0)
         else
-            features(15) = 0.1 + 0.3 * rand();    % Low frequency for other attacks
+            features(13) = 0.1 + 0.3 * rand();    % Low frequency for other attacks
         end
     else
         % Normal nodes: low frequency
-        features(15) = 0.05 + 0.25 * rand();
+        features(13) = 0.05 + 0.25 * rand();
     end
     
-    % 16. burst_intensity: Detect actual message bursts (MATCHES TRAINING DATA)
+    % 14. burst_intensity: Detect actual message bursts (MATCHES TRAINING DATA)
     % SIMPLIFIED: Give high values for flooding/adaptive flooding attacks
     if ~isempty(sender_node) && isfield(sender_node, 'is_attacker') && sender_node.is_attacker && ...
        isfield(sender_node, 'attack_strategy') && ~isempty(sender_node.attack_strategy)
         % Give HIGH burst values for flooding attacks
         if strcmp(sender_node.attack_strategy, 'FLOODING')
-            features(16) = 0.85 + 0.15 * rand();  % Very high burst intensity (0.85-1.0)
+            features(14) = 0.85 + 0.15 * rand();  % Very high burst intensity (0.85-1.0)
         elseif strcmp(sender_node.attack_strategy, 'ADAPTIVE_FLOODING')
-            features(16) = 0.80 + 0.20 * rand();  % High burst intensity (0.80-1.0)
+            features(14) = 0.80 + 0.20 * rand();  % High burst intensity (0.80-1.0)
         else
-            features(16) = 0.0 + 0.3 * rand();    % Low bursts for other attacks
+            features(14) = 0.0 + 0.3 * rand();    % Low bursts for other attacks
         end
     else
         % Normal nodes: low burst intensity
-        features(16) = 0.0 + 0.25 * rand();
+        features(14) = 0.0 + 0.25 * rand();
     end
     
-    % 17. inter_arrival_variance: Normalized variance of inter-arrival times (MATCHES TRAINING DATA)
+    % 15. inter_arrival_variance: Normalized variance of inter-arrival times (MATCHES TRAINING DATA)
     % SIMPLIFIED: Give high values for flooding/adaptive flooding attacks
     if ~isempty(sender_node) && isfield(sender_node, 'is_attacker') && sender_node.is_attacker && ...
        isfield(sender_node, 'attack_strategy') && ~isempty(sender_node.attack_strategy)
         % Give HIGH variance values for flooding attacks
         if strcmp(sender_node.attack_strategy, 'FLOODING')
-            features(17) = 0.60 + 0.30 * rand();  % High variance (0.60-0.90)
+            features(15) = 0.60 + 0.30 * rand();  % High variance (0.60-0.90)
         elseif strcmp(sender_node.attack_strategy, 'ADAPTIVE_FLOODING')
-            features(17) = 0.70 + 0.30 * rand();  % Very high variance (0.70-1.0)
+            features(15) = 0.70 + 0.30 * rand();  % Very high variance (0.70-1.0)
         else
-            features(17) = 0.0 + 0.3 * rand();    % Low variance for other attacks
+            features(15) = 0.0 + 0.3 * rand();    % Low variance for other attacks
         end
     else
         % Normal nodes: low variance
-        features(17) = 0.0 + 0.25 * rand();
+        features(15) = 0.0 + 0.25 * rand();
     end
     
-    % 18. size_consistency: 1 - normalized std of message lengths (MATCHES TRAINING DATA)
+    % 16. size_consistency: 1 - normalized std of message lengths (MATCHES TRAINING DATA)
     % SIMPLIFIED: Give high values for flooding/adaptive flooding attacks
     if ~isempty(sender_node) && isfield(sender_node, 'is_attacker') && sender_node.is_attacker && ...
        isfield(sender_node, 'attack_strategy') && ~isempty(sender_node.attack_strategy)
         % Give HIGH consistency values for flooding attacks
         if strcmp(sender_node.attack_strategy, 'FLOODING')
-            features(18) = 0.80 + 0.20 * rand();  % Very high consistency (0.80-1.0)
+            features(16) = 0.80 + 0.20 * rand();  % Very high consistency (0.80-1.0)
         elseif strcmp(sender_node.attack_strategy, 'ADAPTIVE_FLOODING')
-            features(18) = 0.75 + 0.20 * rand();  % High consistency (0.75-0.95)
+            features(16) = 0.75 + 0.20 * rand();  % High consistency (0.75-0.95)
         else
-            features(18) = 0.2 + 0.4 * rand();    % Moderate consistency for other attacks
+            features(16) = 0.2 + 0.4 * rand();    % Moderate consistency for other attacks
         end
     else
         % Normal nodes: low to moderate consistency
-        features(18) = 0.2 + 0.4 * rand();
+        features(16) = 0.2 + 0.4 * rand();
     end
     
-    % FLOODING PATTERN DETECTION: Already handled above by direct assignment
-    % No additional boosting needed
     
-    % 19. timing_regularity: Measure regularity/consistency of message timing (MATCHES TRAINING DATA)
+    % 17. timing_regularity: Measure regularity/consistency of message timing (MATCHES TRAINING DATA)
     % SIMPLIFIED: Give high values for flooding/adaptive flooding attacks
     if ~isempty(sender_node) && isfield(sender_node, 'is_attacker') && sender_node.is_attacker && ...
        isfield(sender_node, 'attack_strategy') && ~isempty(sender_node.attack_strategy)
         % Give HIGH regularity values for flooding attacks
         if strcmp(sender_node.attack_strategy, 'FLOODING')
-            features(19) = 0.80 + 0.15 * rand();  % Very high regularity (0.80-0.95)
+            features(17) = 0.80 + 0.15 * rand();  % Very high regularity (0.80-0.95)
         elseif strcmp(sender_node.attack_strategy, 'ADAPTIVE_FLOODING')
-            features(19) = 0.75 + 0.20 * rand();  % High regularity (0.75-0.95)
+            features(17) = 0.75 + 0.20 * rand();  % High regularity (0.75-0.95)
         else
-            features(19) = 0.1 + 0.3 * rand();    % Low regularity for other attacks
+            features(17) = 0.1 + 0.3 * rand();    % Low regularity for other attacks
         end
     else
         % Normal nodes: low to moderate regularity
-        features(19) = 0.0 + 0.4 * rand();
+        features(17) = 0.0 + 0.4 * rand();
     end
     
-    % 20. volume_anomaly_score: ratio of SENDER's messages in last 60s to total from sender
+    % 18. volume_anomaly_score: ratio of SENDER's messages in last 60s to total from sender
     % (sender-aware to distinguish flooding from legitimate forwarding traffic)
     % IMPORTANT: For early flooding detection, also consider message_frequency (feature 16)
     if isfield(node, 'message_history') && ~isempty(node.message_history) && ~isempty(sender_node) && isfield(sender_node, 'id')
@@ -1293,28 +1332,28 @@ function features = extractMessageFeatures(node, message, sender_node, current_t
             raw_ratio = sender_recent / sender_total;
             % Scale by absolute volume to avoid false positives on low traffic
             volume_factor = min(1.0, sender_recent / 15); % 15+ recent msgs = full volume factor
-            features(20) = raw_ratio * volume_factor;
+            features(18) = raw_ratio * volume_factor;
         elseif sender_total > 5
             % Some history but not enough recent volume - scale down significantly
             raw_ratio = sender_recent / sender_total;
             confidence_factor = min(0.4, sender_recent / 10); % Max 0.4 unless 10+ recent msgs
-            features(20) = raw_ratio * confidence_factor;
+            features(18) = raw_ratio * confidence_factor;
         elseif sender_total > 0
             % EARLY FLOODING DETECTION: Very few messages BUT check if frequency is abnormally high
             raw_ratio = sender_recent / sender_total;
             % If message_frequency (feature 16) is already computed and HIGH, boost volume anomaly
             % Early flooding has low absolute count but HIGH rate
-            if features(16) > 0.15  % If sending at elevated frequency
+            if features(13) > 0.15  % If sending at elevated frequency
                 % Boost based on frequency: high frequency = early flooding indicator
-                frequency_boost = min(1.0, features(16) / 0.25); % 0.25+ freq = full boost
+                frequency_boost = min(1.0, features(13) / 0.25); % 0.25+ freq = full boost
                 confidence_factor = min(0.8, (sender_total / 15) + frequency_boost * 0.7); % Up to 0.8 with frequency boost
             else
                 % Normal low-volume traffic: give benefit of doubt
                 confidence_factor = sender_total / 15; % 0.067 for 1 msg, 0.133 for 2, etc.
             end
-            features(20) = raw_ratio * confidence_factor;
+            features(18) = raw_ratio * confidence_factor;
         else
-            features(20) = 0;
+            features(18) = 0;
         end
     elseif isfield(node, 'message_history') && ~isempty(node.message_history)
         % Fallback: use total if sender unknown (also apply volume gating)
@@ -1324,33 +1363,30 @@ function features = extractMessageFeatures(node, message, sender_node, current_t
         if total > 10 && recent > 8
             raw_ratio = recent / total;
             volume_factor = min(1.0, recent / 15);
-            features(20) = raw_ratio * volume_factor;
+            features(18) = raw_ratio * volume_factor;
         else
             raw_ratio = recent / total;
             confidence_factor = min(0.4, total / 15);
-            features(20) = raw_ratio * confidence_factor;
+            features(18) = raw_ratio * confidence_factor;
         end
     else
-        features(20) = 0;
+        features(18) = 0;
     end
     
-    % 21. sender_reputation: dynamic computation based on observable red flags ONLY
-    % CRITICAL: No ground truth checks - must work from observable behavior only
-    % Compute dynamic reputation based on message content and history
-    base_rep = getSenderReputation(node, message.source_id);
+    
     
     % Compute message-specific reputation from observable features in THIS message
     msg_rep = 0.8; % Start neutral for each message
     
     % Penalize for suspicious content in THIS message (observable)
-    if features(13) > 0 % Suspicious URLs present
-        msg_rep = msg_rep - 0.25 * features(13); % Stronger penalty for URLs
+    if features(11) > 0 % Suspicious URLs present
+        msg_rep = msg_rep - 0.25 * features(11); % Stronger penalty for URLs
     end
-    if features(12) > 0.5 % RELAXED: Only penalize very high emergency keyword count
-        msg_rep = msg_rep - 0.1 * (features(12) - 0.5); % Scaled penalty above threshold
+    if features(10) > 0.5 % RELAXED: Only penalize very high emergency keyword count
+        msg_rep = msg_rep - 0.1 * (features(10) - 0.5); % Scaled penalty above threshold
     end
-    if features(14) > 0.4 % RELAXED: Only penalize high command patterns
-        msg_rep = msg_rep - 0.15 * (features(14) - 0.4); % Scaled penalty above threshold
+    if features(12) > 0.4 % RELAXED: Only penalize high command patterns
+        msg_rep = msg_rep - 0.15 * (features(12) - 0.4); % Scaled penalty above threshold
     end
     
     % NEW: Aggressive penalty for flooding-like behavior patterns
@@ -1365,223 +1401,150 @@ function features = extractMessageFeatures(node, message, sender_node, current_t
     % Only apply flooding detection if sender has sent at least 3 messages
     if sender_message_count >= 3
         % High message frequency
-        if features(16) > 0.15
-            flooding_score = flooding_score + (features(16) - 0.15) * 0.5;
+        if features(14) > 0.15
+            flooding_score = flooding_score + (features(14) - 0.15) * 0.5;
         end
-        
         % High timing regularity (robotic patterns)
-        if features(15) > 0.8
-            flooding_score = flooding_score + (features(15) - 0.8) * 1.0;
+        if features(13) > 0.8
+            flooding_score = flooding_score + (features(13) - 0.8) * 1.0;
         end
-        
         % High size consistency (identical messages)
-        if features(19) > 0.8
-            flooding_score = flooding_score + (features(19) - 0.8) * 0.8;
+        if features(17) > 0.8
+            flooding_score = flooding_score + (features(17) - 0.8) * 0.8;
         end
-        
         % Volume anomaly present
-        if features(20) > 0.3
-            flooding_score = flooding_score + features(20) * 0.6;
+        if features(18) > 0.3
+            flooding_score = flooding_score + features(18) * 0.6;
         end
-        
         % Apply flooding penalty (max 0.4 reduction)
         if flooding_score > 0
             msg_rep = msg_rep - min(0.4, flooding_score);
         end
     end
-    
+    % 19. sender_reputation: dynamic computation based on observable red flags ONLY
+    % CRITICAL: No ground truth checks - must work from observable behavior only
+    % Compute dynamic reputation based on message content and history
+    base_rep = getSenderReputation(node, message.source_id);
     % Blend historical reputation (50%) with current message reputation (50%)
     % Increased historical weight to propagate bad reputation across messages
-    features(21) = max(0.05, 0.5 * base_rep + 0.5 * msg_rep);
+    features(19) = max(0.05, 0.5 * base_rep + 0.5 * msg_rep);
     
-    % 22. header_integrity: use a proxy (e.g., always high unless message is malformed)
-    if isfield(message, 'header_valid') && ~message.header_valid
+    % 20. message_similarity_score
+    if isfield(node, 'message_history') && ~isempty(node.message_history)
+        last_msg = node.message_history{end};
+        if isfield(last_msg, 'content')
+            features(20) = jaccardSimilarity(lower(message.content), lower(last_msg.content));
+        else
+            features(20) = 0.5;
+        end
+    else
+        features(20) = 0.5;
+    end
+
+    % 21. response_pattern (simple: is this message a reply?)
+    if contains(lower(message.content), 'reply') || contains(lower(message.content), 'ack')
+        features(21) = 1.0;
+    else
+        features(21) = 0.0;
+    end
+
+    % 22. interaction_diversity (number of unique senders in history)
+    if isfield(node, 'message_history') && ~isempty(node.message_history)
+        senders = cellfun(@(m) m.source_id, node.message_history);
+        features(22) = min(1, numel(unique(senders)) / max(1, numel(senders)));
+    else
         features(22) = 0.5;
-    else
-        features(22) = 1.0;
     end
-    
-    % 23. payload_entropy: content entropy (reuse calculated entropy)
-    features(23) = features(9); % Copy from entropy feature
-    
-    % 24. protocol_compliance: assume always compliant unless flagged
-    if isfield(message, 'protocol_compliant') && ~message.protocol_compliant
+
+    % 23. temporal_consistency (variance of timestamps)
+    if isfield(node, 'message_history') && ~isempty(node.message_history)
+        times = cellfun(@(m) m.timestamp, node.message_history);
+        if numel(times) > 1
+            features(23) = 1 - min(1, std(times) / max(1, mean(times)));
+        else
+            features(23) = 0.5;
+        end
+    else
+        features(23) = 0.5;
+    end
+
+    % 24. language_consistency (ratio of alphabetic chars)
+    if ~isempty(message.content)
+        alpha_count = sum(isletter(message.content));
+        features(24) = alpha_count / max(1, length(message.content));
+    else
         features(24) = 0.5;
-    else
-        features(24) = 1.0;
     end
-    
-    % 25. route_stability
-    features(25) = calculateRouteStability(node);
-    
-    % 26. route_length: normalized route length
-    if isfield(message, 'route_length')
-        features(26) = min(1, message.route_length / 10);
+
+    % 25. sequence_gap_score (gap between message IDs if numeric)
+    if isfield(node, 'message_history') && numel(node.message_history) > 1
+        ids = cellfun(@(m) double(str2double(m.id)), node.message_history);
+        if all(~isnan(ids)) && numel(ids) > 1
+            gaps = diff(sort(ids));
+            features(25) = min(1, std(gaps) / max(1, mean(gaps)));
+        else
+            features(25) = 0.5;
+        end
     else
-        features(26) = 0;
+        features(25) = 0.5;
     end
-    
-    % 27. route_changes: number of route changes (normalized)
-    if isfield(node, 'route_change_count')
-        features(27) = min(1, node.route_change_count / 5);
+
+    % 26. routing_anomaly (difference in route_path length vs average)
+    if isfield(message, 'route_path') && iscell(message.route_path)
+        route_len = numel(message.route_path);
+        avg_route = 3; % Assume average route length is 3
+        features(26) = min(1, abs(route_len - avg_route) / avg_route);
     else
-        features(27) = 0;
+        features(26) = 0.5;
     end
-    
-    % 28. routing_anomaly: change in route length compared to previous message
-    if isfield(message, 'route_length') && isfield(node, 'last_route_length')
-        diff_len = abs(message.route_length - node.last_route_length);
-        features(28) = min(1, diff_len / 10);
-    else
-        features(28) = 0;
-    end
-    
-    % 29. mesh_health: overall mesh network health score
-    features(29) = calculateMeshHealth(node);
-    
-    % 30. mesh_redundancy: redundancy factor
-    if ~isempty(sender_node) && isfield(sender_node, 'neighbors') && ~isempty(node.neighbors)
-        overlap = intersect(node.neighbors, sender_node.neighbors);
-        features(30) = min(1, length(overlap) / max(1, length(node.neighbors)));
-    else
-        features(30) = 0;
-    end
-    
-    % 31. mesh_connectivity_health
-    features(31) = calculateMeshConnectivityHealth();
-    
-    % 32. battery_impact: Energy consumption (boosted for large messages)
+    % 27. header_integrity
+    features(27) = 1.0; % Default value
+    % 28. encryption_consistency
+    features(28) = 1.0; % Default value
+    % 29. protocol_compliance_score
+    features(29) = 1.0; % Default value
+    % 30. battery_impact_score
     base_battery_impact = 1 - node.battery_level;
-    % RESOURCE_EXHAUSTION: Large messages cause more battery drain
-    if features(8) > 0.8  % Very large message
-        msg_battery_cost = features(8) * 0.3;  % Up to 30% additional drain
-        features(32) = min(1.0, base_battery_impact + msg_battery_cost);
-    else
-        features(32) = base_battery_impact;
-    end
-    
-    % 33. forwarding_behavior (CRITICAL FOR BLACK_HOLE DETECTION)
+    features(30) = base_battery_impact;
+    % 31. processing_load
+    features(31) = calculateProcessingLoad(node);
+    % 32. memory_footprint
+    features(32) = min(1, node.message_buffer.total_bytes / node.max_buffer_bytes);
+    % 33. signal_strength_factor
+    features(33) = calculateSignalStrength(node, sender_node);
+    % 34. mobility_pattern
+    features(34) = 0; % Placeholder, implement if needed
+    % 35. emergency_context_score
+    features(35) = getEmergencyContextScore(message);
+    % 36. forwarding_behavior
     if ~isempty(sender_node) && isfield(sender_node, 'forwarded_count') && isfield(sender_node, 'received_count') && sender_node.received_count > 0
         fwd_ratio = sender_node.forwarded_count / sender_node.received_count;
-        % Additional check: if ratio is suspiciously low AND sender has neighbors, flag as potential black hole
         if fwd_ratio < 0.15 && isfield(sender_node, 'neighbors') && length(sender_node.neighbors) > 0
-            % Very low forwarding despite having neighbors - strong black hole indicator
-            features(33) = min(0.05, fwd_ratio);
+            features(36) = min(0.05, fwd_ratio);
         else
-            features(33) = min(1, fwd_ratio);
+            features(36) = min(1, fwd_ratio);
         end
     else
-        % No data yet - check if sender has message history but no forwarding
         if ~isempty(sender_node) && isfield(sender_node, 'message_history') && ~isempty(sender_node.message_history)
-            % Has received messages but no forwarding recorded - potential black hole
-            features(33) = 0.02;
+            features(36) = 0.02;
         else
-            features(33) = 0.2; % Default: assume lower forwarding until proven otherwise (was 0.5)
+            features(36) = 0.2;
         end
     end
-    
-    % 34. resource_utilization: Processing load (boosted for large messages with commands)
-    base_resource_util = calculateProcessingLoad(node);
-    % RESOURCE_EXHAUSTION: Large messages with command patterns indicate resource attacks
-    if features(8) > 0.8 && features(14) > 0.7  % Large message + command patterns
-        command_processing_cost = features(14) * 0.25;  % Up to 25% additional utilization
-        size_processing_cost = features(8) * 0.15;      % Up to 15% for message size
-        features(34) = min(1.0, base_resource_util + command_processing_cost + size_processing_cost);
-    elseif features(8) > 0.9  % Just very large message
-        features(34) = min(1.0, base_resource_util + features(8) * 0.20);
-    else
-        features(34) = base_resource_util;
-    end
-    
-    % 35. resource_anomaly: Memory footprint anomaly
-    if isempty(node.message_buffer.messages)
-        features(35) = 0;
-    else
-        mem_usage = min(1, node.message_buffer.total_bytes / node.max_buffer_bytes);
-        if mem_usage > 0.8
-            features(35) = mem_usage; % Only flag high usage as anomaly
-        else
-            features(35) = 0;
-        end
-    end
-    
-    % 36. resource_exhaustion: battery depletion rate (enhanced for resource attacks)
-    base_exhaustion = 1 - node.battery_level;
-    % RESOURCE_EXHAUSTION: Combine battery level with message characteristics
-    % Large messages with high command patterns indicate aggressive resource consumption
-    if features(8) > 0.8 && features(14) > 0.5  % Large + commands
-        exhaustion_factor = (features(8) * 0.3) + (features(14) * 0.2);  % Up to 50% boost
-        features(36) = min(1.0, base_exhaustion + exhaustion_factor);
-    elseif features(8) > 0.9  % Just very large
-        features(36) = min(1.0, base_exhaustion + features(8) * 0.25);
-    else
-        features(36) = base_exhaustion;
-    end
-    
-    % 37. resource_recovery: signal strength (proxy for recovery capability)
-    features(37) = calculateSignalStrength(node, sender_node);
-    
-    % 38. resource_variance: processing load variance
-    if isfield(node, 'processing_history') && length(node.processing_history) > 1
-        features(38) = std(node.processing_history);
-    else
-        features(38) = 0;
-    end
-    
-    % 39. resource_trend: battery trend (simplified)
-    if isfield(node, 'battery_history') && length(node.battery_history) > 1
-        trend = diff(node.battery_history);
-        if mean(trend) < 0
-            features(39) = abs(mean(trend));
-        else
-            features(39) = 0;
-        end
+    % 37. neighbor_trust_score
+    features(37) = calculateNeighborTrustScore(node, message.source_id);
+    % 38. mesh_connectivity_health
+    features(38) = calculateMeshConnectivityHealth();
+    % 39. redundancy_factor
+    if ~isempty(sender_node) && isfield(sender_node, 'neighbors') && ~isempty(node.neighbors)
+        overlap = intersect(node.neighbors, sender_node.neighbors);
+        features(39) = min(1, length(overlap) / max(1, length(node.neighbors)));
     else
         features(39) = 0;
     end
-    
-    % 40. resource_spike: sudden processing spike (enhanced for resource attacks)
-    current_load = calculateProcessingLoad(node);
-    if isfield(node, 'last_processing_load')
-        spike = current_load - node.last_processing_load;
-        base_spike = max(0, spike);
-        % RESOURCE_EXHAUSTION: Large messages cause processing spikes
-        if features(8) > 0.8  % Very large message
-            msg_spike_contribution = features(8) * 0.4;  % Up to 40% spike from message size
-            if features(14) > 0.5  % Also has command patterns
-                msg_spike_contribution = msg_spike_contribution + features(14) * 0.3;  % Additional 30%
-            end
-            features(40) = min(1.0, base_spike + msg_spike_contribution);
-        else
-            features(40) = base_spike;
-        end
-    else
-        % First message: estimate spike from message characteristics
-        if features(8) > 0.8  % Large message
-            features(40) = features(8) * 0.6;  % Significant spike for first large message
-            if features(14) > 0.5  % With commands
-                features(40) = min(1.0, features(40) + features(14) * 0.3);
-            end
-        else
-            features(40) = 0;
-        end
-    end
-    
-    % 41. resource_drop: sudden resource drop (neighbor trust score proxy)
-    features(41) = calculateNeighborTrustScore(node, message.source_id);
-    
-    % 42. mesh_specific_1: Emergency context
-    features(42) = getEmergencyContextScore(message);
-    
-    % 43. mesh_specific_2: Mobility pattern
-    if isfield(node, 'total_distance_moved')
-        features(43) = min(1, node.total_distance_moved / 200);
-    else
-        features(43) = 0;
-    end
-    
     % Ensure all features are within [0,1] bounds
 	features = max(0, min(1, features));
+    
 end
 
 % --- Helper for Jaccard similarity between two strings ---
@@ -2318,7 +2281,13 @@ function [is_attack, attack_type, confidence] = predictAttack(ids_model, feature
                     class_names = ids_model.rf_model.ClassNames;  % Use model's actual class order
                     correct_prediction = class_names{max_idx};
                     
-                    fprintf('   [AI] Prediction: %s | Scores: %s\n', correct_prediction, mat2str(scores));
+                    % Print each score with its class name
+                    class_names = ids_model.rf_model.ClassNames;
+                    score_str = '';
+                    for k = 1:length(scores)
+                        score_str = [score_str, sprintf('%s:%.2f ', class_names{k}, scores(k))];
+                    end
+                    fprintf('   [AI] Prediction: %s | Scores: [%s]\n', correct_prediction, strtrim(score_str));
                     attack_type = prediction{1}; % TreeBagger returns cell array
                     
                     % IMPROVED: Confidence calculation adjusted for 6-class problem
@@ -2423,9 +2392,7 @@ function [is_attack, attack_type, confidence] = predictAttack(ids_model, feature
                         % fprintf(' Pre-trained MATLAB RF: %s (conf: %.3f)\n', attack_type, confidence);
                     end
                     
-                case 'PYTHON_PRETRAINED_LOOKUP'
-                    % Use your pre-trained Python model's knowledge directly (NO TREEBAGGER!)
-                    [is_attack, attack_type, confidence] = predictWithPythonModel(ids_model, features);
+                
                     
                 otherwise
                     % Fallback: simulationDetection removed
@@ -2453,20 +2420,7 @@ function [X, y] = generateTrainingData(n_samples, attack_types)
     X = [];
     y = {};
     
-    % Generate samples per class
-    for class_idx = 1:length(attack_types)
-        attack_type = attack_types{class_idx};
-        n_class_samples = round(n_samples * class_probs(class_idx));
-        
-        fprintf('    Generating %d samples for %s\n', n_class_samples, attack_type);
-        
-        for i = 1:n_class_samples
-            % Generate enhanced features for this class
-            features = generateEnhancedFeaturesForClass(attack_type);
-            X = [X; features];
-            y{end+1} = attack_type;
-        end
-    end
+
     
     % Shuffle the data
     n_total = length(y);
@@ -2486,128 +2440,6 @@ function [X, y] = generateTrainingData(n_samples, attack_types)
     end
 end
 
-function features = generateEnhancedFeaturesForClass(class_name)
-    % Generate enhanced 43 features based on class type with more realistic patterns
-    features = rand(1, 43) * 0.3 + 0.1; % Start with low baseline [0.1, 0.4]
-    
-    switch class_name
-        case 'NORMAL'
-            % Normal traffic patterns - diverse and realistic, including occasional bursts
-            % 70% quiet/regular traffic, 30% bursty/active traffic
-            if rand() < 0.7
-                % REGULAR NORMAL TRAFFIC: Quiet, infrequent, low volume
-                features(1) = 0.3 + rand()*0.4;     % node_density: moderate
-                features(8) = 0.02 + rand()*0.15;   % message_length: small
-                features(15) = rand()*0.3;          % timing_regularity: VERY LOW (irregular, realistic)
-                features(16) = 0.1 + rand()*0.3;    % message_frequency: LOW
-                features(17) = rand()*0.4;          % burst_intensity: LOW (no bursts)
-                features(18) = rand()*0.5;          % inter_arrival_variance: varied
-                features(19) = rand()*0.5;          % size_consistency: LOW to moderate (varied)
-                features(20) = rand()*0.3;          % volume_anomaly: LOW
-            else
-                % BURSTY NORMAL TRAFFIC: Legitimate bursts (user sends multiple msgs, forwarding spikes)
-                features(1) = 0.3 + rand()*0.4;     % node_density: moderate
-                features(8) = 0.02 + rand()*0.2;    % message_length: small to moderate
-                features(15) = rand()*0.4;          % timing_regularity: LOW (still irregular even with bursts)
-                features(16) = 0.1 + rand()*0.5;    % message_frequency: LOW to MODERATE
-                features(17) = 0.3 + rand()*0.6;    % burst_intensity: MODERATE to HIGH (bursts!)
-                features(18) = 0.3 + rand()*0.7;    % inter_arrival_variance: MODERATE to HIGH
-                features(19) = rand()*0.7;          % size_consistency: varied
-                features(20) = 0.3 + rand()*0.7;    % volume_anomaly: MODERATE to HIGH (recent activity!)
-            end
-            % Common NORMAL features for both patterns
-            features(21) = 0.7 + rand()*0.3;    % sender_reputation: HIGH (KEY DISCRIMINATOR!)
-            features(22) = 0.9 + rand()*0.1;    % header_integrity: HIGH
-            features(24) = 0.9 + rand()*0.1;    % protocol_compliance: HIGH
-            features(25) = 0.7 + rand()*0.3;    % route_stability: STABLE
-            features(28) = rand()*0.2;          % routing_anomaly: VERY LOW
-            features(32) = 0.05 + rand()*0.3;   % battery_impact: LOW to MODERATE
-            features(33) = 0.4 + rand()*0.4;    % forwarding_behavior: moderate (0.4-0.8)
-            features(34) = 0.1 + rand()*0.9;    % resource_utilization: LOW to HIGH (can spike during forwarding!)
-            features(35) = rand()*0.3;          % resource_anomaly: LOW (temporary spikes are normal)
-            features(36) = 0.05 + rand()*0.3;   % resource_exhaustion: LOW to MODERATE (temp spikes)
-            
-        case 'FLOODING'
-            % Include BOTH early-stage and established flooding patterns
-            % 40% early-stage (low freq, building up), 60% established (high freq, sustained)
-            if rand() < 0.4
-                % EARLY-STAGE FLOODING: First few messages, low accumulated frequency
-                features(16) = 0.1 + rand()*0.3;    % message_frequency: LOW (just starting)
-                features(17) = 0.0 + rand()*0.2;    % burst_intensity: LOW-MODERATE (building)
-                features(20) = 0.7 + rand()*0.3;    % volume_anomaly_score: HIGH (key indicator)
-                features(15) = 0.6 + rand()*0.4;    % timing_regularity: REGULAR (flood pattern visible)
-            else
-                % ESTABLISHED FLOODING: Sustained attack with high frequency
-                features(16) = 0.6 + rand()*0.4;    % message_frequency: VERY HIGH
-                features(17) = 0.7 + rand()*0.3;    % burst_intensity: HIGH
-                features(20) = 0.6 + rand()*0.4;    % volume_anomaly_score: HIGH
-                features(15) = 0.7 + rand()*0.3;    % timing_regularity: HIGH (sustained pattern)
-            end
-            % Common features for all flooding
-            features(8) = 0.4 + rand()*0.6;     % message_length: MODERATE-LARGE
-            features(21) = 0.0 + rand()*0.3;    % sender_reputation: VERY LOW
-            features(32) = 0.6 + rand()*0.4;    % battery_impact: HIGH
-            features(19) = 0.7 + rand()*0.3;    % size_consistency: HIGH (flood msgs similar)
-            
-        case 'ADAPTIVE_FLOODING'
-            % Variable patterns that adapt - HIGH burstiness with consistent patterns are key indicators!
-            features(15) = 0.8 + rand()*0.2;    % timing_regularity: VERY HIGH (consistent burst pattern)
-            features(16) = 0.8 + rand()*0.2;    % message_frequency: VERY HIGH
-            features(17) = 0.8 + rand()*0.2;    % burst_intensity: VERY HIGH
-            features(18) = 0.8 + rand()*0.2;    % inter_arrival_variance: HIGH (adaptive behavior)
-            features(19) = 0.8 + rand()*0.2;    % size_consistency: HIGH (consistent sizes)
-            features(21) = 0.6 + rand()*0.3;    % sender_reputation: moderate-high (mimics normal)
-            features(22) = 0.9 + rand()*0.1;    % header_integrity: VERY HIGH
-            features(24) = 0.9 + rand()*0.1;    % protocol_compliance: VERY HIGH
-            features(32) = 0.6 + rand()*0.3;    % battery_impact: moderate-high
-            features(33) = 0.7 + rand()*0.2;    % forwarding_behavior: HIGH (appears normal)
-            features(34) = 0.6 + rand()*0.3;    % resource_utilization: moderate-high
-            
-        case 'SPOOFING'
-            % High suspicious content, URL patterns
-            features(10) = 0.3 + rand()*0.7;    % special_char_ratio: high
-            features(12) = 0.4 + rand()*0.6;    % emergency_keyword_count: high
-            features(13) = 0.6 + rand()*0.4;    % suspicious_url_count: HIGH (0.6-1.0, normalized)
-            features(15) = 0.2 + rand()*0.4;    % timing_regularity: LOW-MODERATE (irregular)
-            features(16) = 0.3 + rand()*0.3;    % message_frequency: moderate
-            features(17) = 0.2 + rand()*0.3;    % burst_intensity: LOW-MODERATE
-            features(21) = 0.0 + rand()*0.4;    % sender_reputation: very low
-            features(22) = 0.3 + rand()*0.4;    % header_integrity: degraded
-            features(24) = 0.3 + rand()*0.5;    % protocol_compliance: poor
-            features(33) = 0.4 + rand()*0.3;    % forwarding_behavior: moderate
-            
-        case 'BLACK_HOLE'
-            % Low forwarding behavior, routing anomalies, passive pattern
-            features(15) = 0.2 + rand()*0.3;    % timing_regularity: LOW-MODERATE (passive, not bursty)
-            features(16) = 0.2 + rand()*0.4;    % message_frequency: LOW to moderate
-            features(17) = 0.1 + rand()*0.3;    % burst_intensity: LOW
-            features(28) = 0.5 + rand()*0.5;    % routing_anomaly: high
-            features(33) = 0.0 + rand()*0.15;   % forwarding_behavior: VERY LOW (key signature!)
-            features(21) = 0.3 + rand()*0.4;    % sender_reputation: moderate
-            features(25) = 0.2 + rand()*0.4;    % route_stability: poor
-            features(32) = 0.2 + rand()*0.3;    % battery_impact: LOW
-            features(34) = 0.1 + rand()*0.2;    % resource_utilization: LOW
-            
-        case 'RESOURCE_EXHAUSTION'
-            % High resource consumption patterns
-            features(8) = 0.7 + rand()*0.3;     % message_length: VERY LARGE (0.7-1.0)
-            features(15) = 0.3 + rand()*0.4;    % timing_regularity: MODERATE (steady pattern)
-            features(16) = 0.4 + rand()*0.3;    % message_frequency: moderate
-            features(17) = 0.3 + rand()*0.3;    % burst_intensity: moderate
-            features(21) = 0.3 + rand()*0.4;    % sender_reputation: moderate
-            features(32) = 0.7 + rand()*0.3;    % battery_impact: VERY HIGH (key signature!)
-            features(34) = 0.8 + rand()*0.2;    % resource_utilization: VERY HIGH (key signature!)
-            features(35) = 0.5 + rand()*0.5;    % resource_anomaly: large
-            features(36) = 0.8 + rand()*0.2;    % resource_exhaustion: VERY HIGH
-            features(33) = 0.4 + rand()*0.3;    % forwarding_behavior: moderate
-    end
-    
-    % Add realistic noise and correlations
-    features = features + randn(1, 43) * 0.05; % Small gaussian noise
-    
-    % Ensure all features are within [0,1] bounds
-    features(1:43) = max(0, min(1, features(1:43)));
-end
 
 
 function threat_level = assessThreatLevel(attack_type, confidence)
@@ -2811,22 +2643,18 @@ function node = processDetectionResult(node, detection_result, original_message)
     fprintf(']\n');
     % Print feature number and name for each feature
     feature_names = { ...
-        'node_density', 'isolation_factor', 'emergency_priority', 'hop_reliability', 'network_fragmentation', 'critical_node_count', 'backup_route_availability', ...
-        'message_length', 'entropy_score', 'special_char_ratio', 'numeric_ratio', 'emergency_keyword_count', 'suspicious_url_count', 'command_pattern_count', ...
-        'message_frequency', 'burst_intensity', 'inter_arrival_variance', 'size_consistency', 'timing_regularity', 'volume_anomaly_score', ...
-        'sender_reputation', 'message_similarity_score', 'response_pattern', 'interaction_diversity', 'temporal_consistency', 'language_consistency', ...
-        'ttl_anomaly', 'sequence_gap_score', 'routing_anomaly', 'header_integrity', 'encryption_consistency', 'protocol_compliance_score', ...
-        'battery_impact_score', 'processing_load', 'memory_footprint', 'signal_strength_factor', 'mobility_pattern', 'emergency_context_score', ...
-        'route_stability', 'forwarding_behavior', 'neighbor_trust_score', 'mesh_connectivity_health', 'redundancy_factor' ...
+        'node_density', 'isolation_factor', 'emergency_priority', 'network_fragmentation', 'critical_node_count', ...
+        'message_length', 'entropy_score', 'special_char_ratio', 'numeric_ratio', 'emergency_keyword_count', ...
+        'suspicious_url_count', 'command_pattern_count', 'message_frequency', 'burst_intensity', ...
+        'inter_arrival_variance', 'size_consistency', 'timing_regularity', 'volume_anomaly_score', ...
+        'sender_reputation', 'message_similarity_score', 'response_pattern', 'interaction_diversity', ...
+        'temporal_consistency', 'language_consistency', 'sequence_gap_score', 'routing_anomaly', ...
+        'header_integrity', 'encryption_consistency', 'protocol_compliance_score', 'battery_impact_score', ...
+        'processing_load', 'memory_footprint', 'signal_strength_factor', 'mobility_pattern', ...
+        'emergency_context_score', 'forwarding_behavior', 'neighbor_trust_score', 'mesh_connectivity_health', ...
+        'redundancy_factor' ...
     };
-    fprintf('   └─ Features (index:name:value):\n');
-    for i = 1:length(features_for_print)
-        if i <= length(feature_names)
-            fprintf('      [%2d] %-25s = %.4f\n', i, feature_names{i}, features_for_print(i));
-        else
-            fprintf('      [%2d] %-25s = %.4f\n', i, '(unknown)', features_for_print(i));
-        end
-    end
+    
 
     % Log the detected attack (for all cases)
     logMessageDetails(original_message, detection_result, node, detection_result.timestamp);
@@ -4531,21 +4359,17 @@ function ids_model = createOptimizedMATLABModel(ids_model)
             if ~isempty(importance)
                 [~, sorted_idx] = sort(importance, 'descend');
                 fprintf(' Top 5 most important features:\n');
-                feature_names = {
-                    'node_density', 'isolation_factor', 'emergency_priority', 'hop_reliability',
-                    'network_fragmentation', 'critical_node_count', 'backup_route_availability',
-                    'message_length', 'entropy_score', 'special_char_ratio', 'numeric_ratio',
-                    'emergency_keyword_count', 'suspicious_url_count', 'command_pattern_count',
-                    'message_frequency', 'burst_intensity', 'inter_arrival_variance',
-                    'size_consistency', 'timing_regularity', 'volume_anomaly_score',
-                    'sender_reputation', 'message_similarity_score', 'response_pattern',
-                    'interaction_diversity', 'temporal_consistency', 'language_consistency',
-                    'ttl_anomaly', 'sequence_gap_score', 'routing_anomaly', 'header_integrity',
-                    'encryption_consistency', 'protocol_compliance_score', 'battery_impact_score',
-                    'processing_load', 'memory_footprint', 'signal_strength_factor',
-                    'mobility_pattern', 'emergency_context_score', 'route_stability',
-                    'forwarding_behavior', 'neighbor_trust_score', 'mesh_connectivity_health',
-                    'redundancy_factor'
+                feature_names = { ...
+                    'node_density', 'isolation_factor', 'emergency_priority', 'network_fragmentation', 'critical_node_count', ...
+                    'message_length', 'entropy_score', 'special_char_ratio', 'numeric_ratio', 'emergency_keyword_count', ...
+                    'suspicious_url_count', 'command_pattern_count', 'message_frequency', 'burst_intensity', ...
+                    'inter_arrival_variance', 'size_consistency', 'timing_regularity', 'volume_anomaly_score', ...
+                    'sender_reputation', 'message_similarity_score', 'response_pattern', 'interaction_diversity', ...
+                    'temporal_consistency', 'language_consistency', 'sequence_gap_score', 'routing_anomaly', ...
+                    'header_integrity', 'encryption_consistency', 'protocol_compliance_score', 'battery_impact_score', ...
+                    'processing_load', 'memory_footprint', 'signal_strength_factor', 'mobility_pattern', ...
+                    'emergency_context_score', 'forwarding_behavior', 'neighbor_trust_score', 'mesh_connectivity_health', ...
+                    'redundancy_factor' ...
                 };
                 
                 for i = 1:min(5, length(sorted_idx))
@@ -4598,7 +4422,7 @@ function ids_model = loadPretrainedModel(ids_model)
         end
         
         % Fallback: Direct loading of the latest Random Forest model
-        model_files = dir('models/bluetooth_mesh_ids_binary_rf_*.mat');
+        model_files = dir('models/bluetooth_mesh_ids_rf_*.mat');
         if ~isempty(model_files)
             % Sort by date and take the newest
             [~, newest_idx] = max([model_files.datenum]);
@@ -5704,156 +5528,4 @@ function updateForwardingBehaviorInLog(node, current_time)
 end
 
 
-function [is_attack, attack_type, confidence] = predictWithPythonModel(ids_model, features)
-    % Use your pre-trained Python model's feature importance weights for prediction
-    % This simulates your Python RandomForest without retraining
-    
-    try
-        % Calculate weighted score using your Python model's feature importance
-        if length(features) ~= length(ids_model.prediction_weights)
-            % Pad or truncate features to match expected size
-            expected_size = length(ids_model.prediction_weights);
-            if length(features) < expected_size
-                features = [features, zeros(1, expected_size - length(features))];
-            else
-                features = features(1:expected_size);
-            end
-        end
-        
-        % Normalize features to [0,1] range
-        max_features = max(features);
-        min_features = min(features);
-        if max_features > min_features
-            normalized_features = (features - min_features) / (max_features - min_features);
-        else
-            normalized_features = features;
-        end
-        
-        % Enhanced attack detection logic based on actual attack patterns
-        attack_scores = struct();
-        
-        % Key feature indices (based on our feature extraction)
-        msg_freq_idx = 15;      % message_frequency
-        msg_size_idx = 8;       % message_length  
-        suspicious_url_idx = 13; % suspicious_url_count
-        sender_rep_idx = 21;    % sender_reputation
-        battery_impact_idx = 33; % battery_impact
-        forwarding_idx = 40;    % forwarding_behavior
-        routing_anomaly_idx = 29; % routing_anomaly
-        
-        % FLOODING detection
-        flooding_score = 0;
-        if normalized_features(msg_freq_idx) > 0.3
-            flooding_score = flooding_score + 0.4;
-        end
-        if normalized_features(msg_size_idx) > 0.2
-            flooding_score = flooding_score + 0.3;
-        end
-        if normalized_features(battery_impact_idx) > 0.4
-            flooding_score = flooding_score + 0.3;
-        end
-        attack_scores.FLOODING = flooding_score;
-        
-        % SPOOFING detection
-        spoofing_score = 0;
-        if normalized_features(suspicious_url_idx) > 0
-            spoofing_score = spoofing_score + 0.5;
-        end
-        if normalized_features(sender_rep_idx) < 0.5
-            spoofing_score = spoofing_score + 0.3;
-        end
-        attack_scores.SPOOFING = spoofing_score;
-        
-        % BLACK_HOLE detection
-        blackhole_score = 0;
-        if normalized_features(forwarding_idx) < 0.3
-            blackhole_score = blackhole_score + 0.4;
-        end
-        if normalized_features(routing_anomaly_idx) > 0.3
-            blackhole_score = blackhole_score + 0.4;
-        end
-        attack_scores.BLACK_HOLE = blackhole_score;
-        
-        % RESOURCE_EXHAUSTION detection
-        resource_score = 0;
-        if normalized_features(msg_size_idx) > 0.3
-            resource_score = resource_score + 0.3;
-        end
-        if normalized_features(battery_impact_idx) > 0.5
-            resource_score = resource_score + 0.4;
-        end
-        if normalized_features(msg_freq_idx) > 0.2
-            resource_score = resource_score + 0.3;
-        end
-        attack_scores.RESOURCE_EXHAUSTION = resource_score;
-        
-        % NORMAL (baseline)
-        attack_scores.NORMAL = 0.2; % Low baseline
-        
-        % Find the class with highest score
-        score_values = struct2array(attack_scores);
-        [max_score, max_idx] = max(score_values);
-        
-        attack_types_list = {'FLOODING', 'SPOOFING', 'BLACK_HOLE', 'RESOURCE_EXHAUSTION', 'NORMAL'};
-        attack_type = attack_types_list{max_idx};
-        confidence = min(max_score, 1.0); % Cap at 1.0
-        is_attack = ~strcmp(attack_type, 'NORMAL') && confidence > 0.5;
-        
-        % Generate detailed AI reasoning
-        ai_reasons = {};
-        if strcmp(attack_type, 'FLOODING')
-            if normalized_features(msg_freq_idx) > 0.3
-                ai_reasons{end+1} = sprintf('High msg frequency (%.2f)', normalized_features(msg_freq_idx));
-            end
-            if normalized_features(msg_size_idx) > 0.2
-                ai_reasons{end+1} = sprintf('Large msg size (%.2f)', normalized_features(msg_size_idx));
-            end
-            if normalized_features(battery_impact_idx) > 0.4
-                ai_reasons{end+1} = sprintf('High battery impact (%.2f)', normalized_features(battery_impact_idx));
-            end
-        elseif strcmp(attack_type, 'SPOOFING')
-            if normalized_features(suspicious_url_idx) > 0
-                ai_reasons{end+1} = sprintf('Suspicious URLs detected (%.2f)', normalized_features(suspicious_url_idx));
-            end
-            if normalized_features(sender_rep_idx) < 0.5
-                ai_reasons{end+1} = sprintf('Low sender reputation (%.2f)', normalized_features(sender_rep_idx));
-            end
-        elseif strcmp(attack_type, 'BLACK_HOLE')
-            if normalized_features(forwarding_idx) < 0.3
-                ai_reasons{end+1} = sprintf('Low forwarding behavior (%.2f)', normalized_features(forwarding_idx));
-            end
-            if normalized_features(routing_anomaly_idx) > 0.3
-                ai_reasons{end+1} = sprintf('High routing anomaly (%.2f)', normalized_features(routing_anomaly_idx));
-            end
-        elseif strcmp(attack_type, 'RESOURCE_EXHAUSTION')
-            if normalized_features(msg_size_idx) > 0.3
-                ai_reasons{end+1} = sprintf('Large msg size (%.2f)', normalized_features(msg_size_idx));
-            end
-            if normalized_features(battery_impact_idx) > 0.5
-                ai_reasons{end+1} = sprintf('High battery impact (%.2f)', normalized_features(battery_impact_idx));
-            end
-            if normalized_features(msg_freq_idx) > 0.2
-                ai_reasons{end+1} = sprintf('High frequency (%.2f)', normalized_features(msg_freq_idx));
-            end
-        end
-        
-        % Store AI reasoning for later use
-        ids_model.last_ai_reasoning = strjoin(ai_reasons, ', ');
-        
-        % Debug: Print prediction result with reasoning
-        fprintf('DEBUG: AI predicted %s with confidence %.3f (is_attack=%d)\n', attack_type, confidence, is_attack);
-        if ~isempty(ai_reasons)
-            fprintf('DEBUG: AI reasoning: %s\n', ids_model.last_ai_reasoning);
-        end
-        fprintf('DEBUG: Scores - FLOOD:%.2f SPOOF:%.2f BLACK:%.2f RESOURCE:%.2f NORMAL:%.2f\n', ...
-                attack_scores.FLOODING, attack_scores.SPOOFING, attack_scores.BLACK_HOLE, ...
-                attack_scores.RESOURCE_EXHAUSTION, attack_scores.NORMAL);
-        
-    catch ME
-        % Fallback to default detection
-        fprintf('Python model prediction failed: %s\n', ME.message);
-        is_attack = false;
-        attack_type = 'NORMAL';
-        confidence = 0.5;
-    end
-end
+
