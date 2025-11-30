@@ -12,7 +12,7 @@ NUM_NORMAL_NODES = 40;
 NUM_ATTACK_NODES = 5;
 TOTAL_NODES = NUM_NORMAL_NODES + NUM_ATTACK_NODES;
 MESSAGE_INTERVAL = 60; % seconds - INCREASED to 30 to reduce message load
-SIMULATION_TIME = 10 * 60; % 5 minutes for better forwarding analysis
+SIMULATION_TIME = 2 * 60; % 5 minutes for better forwarding analysis
 TRANSMISSION_RANGE = 50; % meterss
 AREA_SIZE = 200; % 200x200 meter area
 next_node_id = TOTAL_NODES + 1; % Track next available node ID for dynamic additions
@@ -1502,54 +1502,6 @@ function stability = calculateRouteStability(node)
     end
 end
 
-% Export feature log as dataset (call this at the end of your main script)
-function exportFeatureDataset()
-    global feature_log;
-    if isempty(feature_log)
-        fprintf('No feature log to export.\n');
-        return;
-    end
-    % Deduplicate feature_log by message_id, keeping only the first occurrence
-    [~, unique_idx] = unique({feature_log.message_id}, 'first');
-    dedup_log = feature_log(sort(unique_idx));
-    % Convert to table for easy export
-    feature_table = struct2table(dedup_log);
-    % Expand features into separate columns with real feature names ONLY
-    features_matrix = vertcat(dedup_log.features);
-    feature_names = { ...
-        'node_density', 'isolation_factor', 'emergency_priority', 'hop_reliability', 'network_fragmentation', 'critical_node_count', 'backup_route_availability', ...
-        'message_length', 'entropy_score', 'special_char_ratio', 'numeric_ratio', 'emergency_keyword_count', 'suspicious_url_count', 'command_pattern_count', ...
-        'message_frequency', 'burst_intensity', 'inter_arrival_variance', 'size_consistency', 'timing_regularity', 'volume_anomaly_score', ...
-        'sender_reputation', 'message_similarity_score', 'response_pattern', 'interaction_diversity', 'temporal_consistency', 'language_consistency', ...
-        'ttl_anomaly', 'sequence_gap_score', 'routing_anomaly', 'header_integrity', 'encryption_consistency', 'protocol_compliance_score', ...
-        'battery_impact_score', 'processing_load', 'memory_footprint', 'signal_strength_factor', 'mobility_pattern', 'emergency_context_score', ...
-        'route_stability', 'forwarding_behavior', 'neighbor_trust_score', 'mesh_connectivity_health', 'redundancy_factor' ...
-    };
-    for i = 1:length(feature_names)
-        feature_table.(feature_names{i}) = features_matrix(:,i);
-    end
-    feature_table.features = [];
-    
-    % Ensure attack_type column is properly formatted as categorical for better CSV export
-    if ismember('attack_type', feature_table.Properties.VariableNames)
-        feature_table.attack_type = categorical(feature_table.attack_type);
-    end
-    % Save as CSV
-    results_dir = 'training_data';
-    if ~exist(results_dir, 'dir')
-        mkdir(results_dir);
-    end
-    timestamp = datestr(now, 'yyyymmdd_HHMMSS');
-    csv_filename = fullfile(results_dir, sprintf('feature_dataset_%s.csv', timestamp));
-    writetable(feature_table, csv_filename);
-    fprintf('Feature dataset exported to: %s\n', csv_filename);
-    
-    % Balance the dataset and create a balanced version
-    balanced_table = balanceDataset(feature_table);
-    balanced_filename = fullfile(results_dir, sprintf('balanced_feature_dataset_%s.csv', timestamp));
-    writetable(balanced_table, balanced_filename);
-    fprintf('Balanced feature dataset exported to: %s\n', balanced_filename);
-end
 
 function balanced_table = balanceDataset(feature_table)
     % Balance dataset using undersampling and oversampling techniques
@@ -5290,8 +5242,7 @@ function runBluetoothMeshSimulation()
     fprintf('\nExporting training dataset...\n');
     exportTrainingDataset();
     
-    fprintf('\nExporting feature dataset...\n');
-    exportFeatureDataset();
+
 
     fprintf('\n--- Forwarding Behavior for ATTACKER Nodes ---\n');
     if exist('nodes', 'var') && ~isempty(nodes)
